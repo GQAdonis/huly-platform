@@ -22,6 +22,7 @@ import serverClientPlugin, {
 import { program } from 'commander'
 import { importNotion } from './notion'
 import { setMetadata } from '@hcengineering/platform'
+import { getFileUploader, type FileUploader } from './fileUploader'
 
 /**
  * @public
@@ -38,40 +39,15 @@ export function importTool (): void {
 
   program.version('0.0.1')
 
-  // import-notion-with-teamspaces /home/anna/work/notion/pages/exported --workspace workspace
-  program
-    .command('import-notion-with-teamspaces <dir>')
-    .description('import extracted archive exported from Notion as "Markdown & CSV"')
-    .requiredOption('-u, --user <user>', 'user')
-    .requiredOption('-pw, --password <password>', 'password')
-    .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
-    .action(async (dir: string, cmd) => {
-      await importFromNotion(dir, cmd.user, cmd.password, cmd.workspace)
-    })
-
-  // import-notion-to-teamspace /home/anna/work/notion/pages/exported --workspace workspace --teamspace notion
-  program
-    .command('import-notion-to-teamspace <dir>')
-    .description('import extracted archive exported from Notion as "Markdown & CSV"')
-    .requiredOption('-u, --user <user>', 'user')
-    .requiredOption('-pw, --password <password>', 'password')
-    .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
-    .requiredOption('-ts, --teamspace <teamspace>', 'new teamspace name where the documents should be imported to')
-    .action(async (dir: string, cmd) => {
-      await importFromNotion(dir, cmd.user, cmd.password, cmd.workspace, cmd.teamspace)
-    })
-
-  async function importFromNotion (
-    dir: string,
+  async function authorize (
     user: string,
     password: string,
     workspaceUrl: string,
-    teamspace?: string
+    f: (client: TxOperations, uploader: FileUploader) => Promise<void>
   ): Promise<void> {
-    if (workspaceUrl === '' || user === '' || password === '' || teamspace === '') {
+    if (workspaceUrl === '' || user === '' || password === '') {
       return
     }
-
     const config = await (await fetch(concatLink(getFrontUrl(), '/config.json'))).json()
     console.log('Setting up Accounts URL: ', config.ACCOUNTS_URL)
     setMetadata(serverClientPlugin.metadata.Endpoint, config.ACCOUNTS_URL)
@@ -93,18 +69,6 @@ export function importTool (): void {
     const selectedWs = await selectWorkspace(userToken, workspaces[0].workspace)
     console.log(selectedWs)
 
-    function uploader (token: string) {
-      return (id: string, data: any) => {
-        return fetch(concatLink(getFrontUrl(), config.UPLOAD_URL), {
-          method: 'POST',
-          headers: {
-            Authorization: 'Bearer ' + token
-          },
-          body: data
-        })
-      }
-    }
-
     console.log('Connecting to Transactor URL: ', selectedWs.endpoint)
     const connection = await createClient(selectedWs.endpoint, selectedWs.token)
     const acc = connection.getModel().getAccountByEmail(user)
@@ -113,10 +77,43 @@ export function importTool (): void {
       return
     }
     const client = new TxOperations(connection, acc._id)
-    console.log('OK. Start the import directory: ', dir)
-    await importNotion(client, uploader(selectedWs.token), dir, teamspace)
+    const uploader = getFileUploader(config.UPLOAD_URL, selectedWs.token)
+    try {
+      await f(client, uploader)
+    } catch (err: any) {
+      console.error(err)
+    }
     await connection.close()
   }
+
+  // import-notion-with-teamspaces /home/anna/work/notion/pages/exported --workspace workspace
+  program
+    .command('import-notion-with-teamspaces <dir>')
+    .description('import extracted archive exported from Notion as "Markdown & CSV"')
+    .requiredOption('-u, --user <user>', 'user')
+    .requiredOption('-pw, --password <password>', 'password')
+    .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
+    .action(async (dir: string, cmd) => {
+      const { workspaceUrl, user, password } = cmd
+      await authorize(user, password, workspaceUrl, async (client, uploader) => {
+        await importNotion(client, uploader, dir)
+      })
+    })
+
+  // import-notion-to-teamspace /home/anna/work/notion/pages/exported --workspace workspace --teamspace notion
+  program
+    .command('import-notion-to-teamspace <dir>')
+    .description('import extracted archive exported from Notion as "Markdown & CSV"')
+    .requiredOption('-u, --user <user>', 'user')
+    .requiredOption('-pw, --password <password>', 'password')
+    .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
+    .requiredOption('-ts, --teamspace <teamspace>', 'new teamspace name where the documents should be imported to')
+    .action(async (dir: string, cmd) => {
+      const { workspaceUrl, user, password, teamspace } = cmd
+      await authorize(user, password, workspaceUrl, async (client, uploader) => {
+        await importNotion(client, uploader, dir, teamspace)
+      })
+    })
 
   program.parse(process.argv)
 }

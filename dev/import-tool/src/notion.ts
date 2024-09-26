@@ -42,6 +42,7 @@ import core from '@hcengineering/model-core'
 import { readdir, stat, readFile } from 'fs/promises'
 import { type Dirent } from 'fs'
 import { basename, join, parse } from 'path'
+import { FileUploader } from './fileUploader'
 
 interface DocumentMetadata {
   id: string
@@ -71,8 +72,6 @@ enum NOTION_MD_LINK_TYPES {
   ATTACHMENT,
   UNKNOWN
 }
-
-export type FileUploader = (id: string, data: any) => Promise<any>
 
 export async function importNotion (
   client: TxOperations,
