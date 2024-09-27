@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-import { concatLink, Ref, TxOperations } from '@hcengineering/core'
+import { concatLink, type Ref, TxOperations } from '@hcengineering/core'
 import serverClientPlugin, {
   createClient,
   getUserWorkspaces,
@@ -23,7 +23,7 @@ import { program } from 'commander'
 import { importNotion } from './notion'
 import { setMetadata } from '@hcengineering/platform'
 import { getFileUploader, type FileUploader } from './fileUploader'
-import { Teamspace } from '@hcengineering/document'
+import { type Teamspace } from '@hcengineering/document'
 import { importClickUp } from './clickup'
 
 /**
@@ -115,7 +115,7 @@ export function importTool (): void {
       await authorize(user, password, workspace, async (client, uploader) => {
         await importNotion(client, uploader, dir, teamspace)
       })
-    }) 
+    })
 
   // import-notion-to-teamspace /home/anna/work/notion/pages/exported --workspace workspace --teamspace notion
   program

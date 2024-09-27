@@ -4,15 +4,21 @@ import {
   generateId,
   makeCollaborativeDoc,
   type Ref,
+  SortingOrder,
+  type Status,
   type TxOperations
 } from '@hcengineering/core'
 import { type FileUploader } from './fileUploader'
 import document, { type Document, type Teamspace } from '@hcengineering/document'
+import tracker, { IssuePriority, type Issue, type Project } from '@hcengineering/tracker'
 import { jsonToYDocNoSchema, parseMessageMarkdown } from '@hcengineering/text'
 import { yDocToBuffer } from '@hcengineering/collaboration'
 import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
-import { error } from 'console'
+import csv from 'csvtojson'
+import core from '@hcengineering/model-core'
+import { makeRank } from '@hcengineering/rank'
+import task, { type TaskType } from '@hcengineering/task'
 
 type ClickupId = string
 type HulyId = string
@@ -31,6 +37,30 @@ interface DocumentMetadata {
 type FileMetadataMap = Map<ClickupId, FileMetadata>
 type DocumentMetadataMap = Map<HulyId, DocumentMetadata>
 
+interface ClickupTask {
+  'Task ID': string
+  'Task Name': string
+  'Task Content': string
+  'Status': string
+  'Parent ID': string
+  'Attachments': string[]
+  'Assignees': string[]
+  'Comments': string // todo: obj
+  'Time Estimated': number
+}
+
+interface HulyIssue {
+  'title': string
+  'description': string
+  'status': Ref<Status>
+  'estimation': number
+}
+
+const StatusMap = new Map <string, Ref<Status>>()
+StatusMap.set('выполнено', tracker.status.Done)
+
+const DEFAULT_PROJECT_FIXME = '66f67c4da0935ea73e985ba4' as Ref<Project>
+
 export async function importClickUp (
   client: TxOperations,
   uploadFile: FileUploader,
@@ -44,29 +74,33 @@ export async function importClickUp (
     const parsedFileName = parse(file)
     const extension = parsedFileName.ext.toLowerCase()
     const fullPath = join(dir, file)
-    const data = await readFile(fullPath)
     if (extension === '.md') {
+      const data = await readFile(fullPath)
       await importPageDocument(client, uploadFile, parsedFileName.name, data, teamspace)
     } else if (extension === '.csv') {
+      const jsonArray = await csv().fromFile(fullPath)
+      console.log(jsonArray)
+      for (const json of jsonArray) {
+        const clickupTask = json as ClickupTask
+        console.log(clickupTask)
+        const issue = convertClickupToHullyIssue(clickupTask)
+        console.log(issue)
 
+        await importIssue(client, uploadFile, issue, DEFAULT_PROJECT_FIXME)
+        console.log(issue)
+      }
     }
   }
 }
 
-// async function collectFilesMetadata (
-//   files: Dirent[],
-//   fileMetaMap: FileMetadataMap,
-//   documentMetaMap: DocumentMetadataMap
-// ): Promise<void> {
-//   for (const file of files) {
-//     const clickupId = extractClickupId(file.name)
-//     // fileMetaMap.set(clickupId, {
-//     //   filePath: join(file.path, file.name),
-//     //   extension: parse(file.name).ext.toLowerCase()
-//     // })
-//     // await collectFileMetadata(file, fileMetaMap, documentMetaMap)
-//   }
-// }
+function convertClickupToHullyIssue (task: ClickupTask): HulyIssue {
+  return {
+    title: '[' + task['Task ID'] + '] ' + task['Task Name'],
+    description: task['Task Content'],
+    status: StatusMap.get(task.Status) ?? tracker.status.Backlog,
+    estimation: task['Time Estimated']
+  }
+}
 
 async function importPageDocument (
   client: TxOperations,
@@ -117,6 +151,63 @@ async function importPageDocument (
   )
 }
 
-async function importIssue() {
-    
+async function importIssue (
+  client: TxOperations,
+  uploadFile: FileUploader,
+  data: HulyIssue,
+  space: Ref<Project>
+): Promise<void> {
+  const id: Ref<Issue> = generateId()
+  const lastOne = await client.findOne<Issue>(
+    tracker.class.Issue,
+    { space },
+    { sort: { rank: SortingOrder.Descending } }
+  )
+  const incResult = await client.updateDoc(
+    tracker.class.Project,
+    core.space.Space,
+    space,
+    {
+      $inc: { sequence: 1 }
+    },
+    true
+  )
+
+  const proj = await client.findOne(tracker.class.Project, { _id: space })
+  const number = (incResult as any).object.sequence
+  const identifier = `${proj?.identifier}-${number}`
+
+  const taskKind = proj?.type !== undefined ? { parent: proj.type } : {}
+  const kind = (await client.findOne(task.class.TaskType, taskKind)) as TaskType
+
+  const taskToCreate = {
+    title: data.title,
+    description: makeCollaborativeDoc(id, 'description'),
+    assignee: null,
+    component: null,
+    number,
+    status: data.status,
+    priority: IssuePriority.NoPriority,
+    rank: makeRank(lastOne?.rank, undefined),
+    comments: 0,
+    subIssues: 0,
+    dueDate: null,
+    parents: [],
+    reportedTime: 0,
+    remainingTime: 0,
+    estimation: data.estimation,
+    reports: 0,
+    childInfo: [],
+    identifier,
+    kind: kind._id
+  }
+  await client.addCollection(
+    tracker.class.Issue,
+    space,
+    tracker.ids.NoParent,
+    tracker.class.Issue,
+    'subIssues',
+    taskToCreate,
+    id
+  )
 }
