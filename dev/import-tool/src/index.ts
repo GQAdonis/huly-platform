@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-import { concatLink, TxOperations } from '@hcengineering/core'
+import { concatLink, Ref, TxOperations } from '@hcengineering/core'
 import serverClientPlugin, {
   createClient,
   getUserWorkspaces,
@@ -23,6 +23,8 @@ import { program } from 'commander'
 import { importNotion } from './notion'
 import { setMetadata } from '@hcengineering/platform'
 import { getFileUploader, type FileUploader } from './fileUploader'
+import { Teamspace } from '@hcengineering/document'
+import { importClickUp } from './clickup'
 
 /**
  * @public
@@ -77,7 +79,7 @@ export function importTool (): void {
       return
     }
     const client = new TxOperations(connection, acc._id)
-    const uploader = getFileUploader(config.UPLOAD_URL, selectedWs.token)
+    const uploader = getFileUploader(getFrontUrl(), selectedWs.token)
     try {
       await f(client, uploader)
     } catch (err: any) {
@@ -94,8 +96,8 @@ export function importTool (): void {
     .requiredOption('-pw, --password <password>', 'password')
     .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
     .action(async (dir: string, cmd) => {
-      const { workspaceUrl, user, password } = cmd
-      await authorize(user, password, workspaceUrl, async (client, uploader) => {
+      const { workspace, user, password } = cmd
+      await authorize(user, password, workspace, async (client, uploader) => {
         await importNotion(client, uploader, dir)
       })
     })
@@ -109,9 +111,24 @@ export function importTool (): void {
     .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
     .requiredOption('-ts, --teamspace <teamspace>', 'new teamspace name where the documents should be imported to')
     .action(async (dir: string, cmd) => {
-      const { workspaceUrl, user, password, teamspace } = cmd
-      await authorize(user, password, workspaceUrl, async (client, uploader) => {
+      const { workspace, user, password, teamspace } = cmd
+      await authorize(user, password, workspace, async (client, uploader) => {
         await importNotion(client, uploader, dir, teamspace)
+      })
+    }) 
+
+  // import-notion-to-teamspace /home/anna/work/notion/pages/exported --workspace workspace --teamspace notion
+  program
+    .command('import-clickup <dir>')
+    .description('import extracted archive exported from Notion as "Markdown & CSV"')
+    .requiredOption('-u, --user <user>', 'user')
+    .requiredOption('-pw, --password <password>', 'password')
+    .requiredOption('-ws, --workspace <workspace>', 'workspace url where the documents should be imported to')
+    .requiredOption('-ts, --teamspace <teamspace>', 'new teamspace name where the documents should be imported to')
+    .action(async (dir: string, cmd) => {
+      const { workspace, user, password, teamspace } = cmd
+      await authorize(user, password, workspace, async (client, uploader) => {
+        await importClickUp(client, uploader, dir, '66f55fe76fcddfa319d77c81' as Ref<Teamspace>)
       })
     })
 
