@@ -1,7 +1,11 @@
 import {
   type AttachedData,
+  type Class,
+  ClassifierKind,
   type CollaborativeDoc,
   collaborativeDocParse,
+  type Data,
+  type Doc,
   generateId,
   makeCollaborativeDoc,
   type Ref,
@@ -19,7 +23,8 @@ import { join, parse } from 'path'
 import csv from 'csvtojson'
 import core from '@hcengineering/model-core'
 import { makeRank } from '@hcengineering/rank'
-import task, { type TaskType } from '@hcengineering/task'
+import task, { type ProjectType, type TaskType } from '@hcengineering/task'
+import { getEmbeddedLabel } from '@hcengineering/platform'
 
 type ClickupId = string
 type HulyId = string
@@ -68,30 +73,31 @@ export async function importClickUp (
   dir: string,
   teamspace: Ref<Teamspace>
 ): Promise<void> {
-  const files = await readdir(dir, { recursive: true })
-  console.log(files)
+  // const files = await readdir(dir, { recursive: true })
+  // console.log(files)
 
-  for (const file of files) {
-    const parsedFileName = parse(file)
-    const extension = parsedFileName.ext.toLowerCase()
-    const fullPath = join(dir, file)
-    if (extension === '.md') {
-      const data = await readFile(fullPath)
-      await importPageDocument(client, uploadFile, parsedFileName.name, data, teamspace)
-    } else if (extension === '.csv') {
-      const jsonArray = await csv().fromFile(fullPath)
-      console.log(jsonArray)
-      for (const json of jsonArray) {
-        const clickupTask = json as ClickupTask
-        console.log(clickupTask)
-        const issue = convertClickupToHullyIssue(clickupTask)
-        console.log(issue)
+  await createProjectType(client)
+  // for (const file of files) {
+  //   const parsedFileName = parse(file)
+  //   const extension = parsedFileName.ext.toLowerCase()
+  //   const fullPath = join(dir, file)
+  //   if (extension === '.md') {
+  //     const data = await readFile(fullPath)
+  //     await importPageDocument(client, uploadFile, parsedFileName.name, data, teamspace)
+  //   } else if (extension === '.csv') {
+  //     const jsonArray = await csv().fromFile(fullPath)
+  //     console.log(jsonArray)
+  //     for (const json of jsonArray) {
+  //       const clickupTask = json as ClickupTask
+  //       console.log(clickupTask)
+  //       const issue = convertClickupToHullyIssue(clickupTask)
+  //       console.log(issue)
 
-        await importIssue(client, uploadFile, issue, DEFAULT_PROJECT_FIXME)
-        console.log(issue)
-      }
-    }
-  }
+  //       await importIssue(client, uploadFile, issue, DEFAULT_PROJECT_FIXME)
+  //       console.log(issue)
+  //     }
+  //   }
+  // }
 }
 
 function convertClickupToHullyIssue (task: ClickupTask): HulyIssue {
@@ -181,7 +187,7 @@ async function importIssue (
   const taskKind = proj?.type !== undefined ? { parent: proj.type } : {}
   const kind = (await client.findOne(task.class.TaskType, taskKind)) as TaskType
 
-  const collabId = await importIssueDescription(client, uploadFile, id, data.description)
+  const collabId = await importIssueDescription(uploadFile, id, data.description)
 
   const taskToCreate = {
     title: data.title,
@@ -216,7 +222,6 @@ async function importIssue (
 }
 
 async function importIssueDescription (
-  client: TxOperations,
   uploadFile: FileUploader,
   id: Ref<Issue>,
   data: string
@@ -240,4 +245,60 @@ async function importIssueDescription (
   await uploadFile(id, form)
 
   return collabId
+}
+
+export async function createProjectType (
+  client: TxOperations
+): Promise<Ref<ProjectType>> {
+  const _tasks: Ref<TaskType>[] = []
+  const name = 'ClickUp project'
+  const descriptor = tracker.descriptors.ProjectType
+
+  const categoryObj = client.getModel().findObject(descriptor)
+  if (categoryObj === undefined) {
+    throw new Error('category is not found in model')
+  }
+
+  const baseClassClass = client.getHierarchy().getClass(categoryObj.baseClass)
+
+  const id = generateId<ProjectType>()
+  // todo: it is important for this id to be consistent when re-creating the same
+  // project type with the same id as it will happen during every migration if type is created by the system
+  const targetProjectClassId = `${id}:type:mixin` as Ref<Class<Doc>>
+
+  const tmpl = await client.createDoc(
+    task.class.ProjectType,
+    core.space.Model,
+    {
+      shortDescription: 'For issues imported from ClickUp',
+      descriptor,
+      roles: 0,
+      tasks: _tasks,
+      name,
+      statuses: [],
+      targetClass: targetProjectClassId,
+      classic: true,
+      description: ''
+    },
+    id
+  )
+
+  // Mixin to hold custom fields of this project type
+  await client.createDoc(
+    core.class.Mixin,
+    core.space.Model,
+    {
+      extends: categoryObj.baseClass,
+      kind: ClassifierKind.MIXIN,
+      label: getEmbeddedLabel(name),
+      icon: baseClassClass.icon
+    },
+    targetProjectClassId
+  )
+
+  await client.createMixin(targetProjectClassId, core.class.Mixin, core.space.Model, task.mixin.ProjectTypeClass, {
+    projectType: id
+  })
+
+  return tmpl
 }
