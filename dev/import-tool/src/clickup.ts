@@ -1,5 +1,6 @@
 import {
   type AttachedData,
+  type CollaborativeDoc,
   collaborativeDocParse,
   generateId,
   makeCollaborativeDoc,
@@ -98,7 +99,7 @@ function convertClickupToHullyIssue (task: ClickupTask): HulyIssue {
     title: '[' + task['Task ID'] + '] ' + task['Task Name'],
     description: task['Task Content'],
     status: StatusMap.get(task.Status) ?? tracker.status.Backlog,
-    estimation: task['Time Estimated']
+    estimation: task['Time Estimated'] ?? 0
   }
 }
 
@@ -180,9 +181,11 @@ async function importIssue (
   const taskKind = proj?.type !== undefined ? { parent: proj.type } : {}
   const kind = (await client.findOne(task.class.TaskType, taskKind)) as TaskType
 
+  const collabId = await importIssueDescription(client, uploadFile, id, data.description)
+
   const taskToCreate = {
     title: data.title,
-    description: makeCollaborativeDoc(id, 'description'),
+    description: collabId,
     assignee: null,
     component: null,
     number,
@@ -210,4 +213,31 @@ async function importIssue (
     taskToCreate,
     id
   )
+}
+
+async function importIssueDescription (
+  client: TxOperations,
+  uploadFile: FileUploader,
+  id: Ref<Issue>,
+  data: string
+): Promise<CollaborativeDoc> {
+  const json = parseMessageMarkdown(data ?? '', 'image://')
+  const collabId = makeCollaborativeDoc(id, 'description')
+
+  const yDoc = jsonToYDocNoSchema(json, 'description')
+  const { documentId } = collaborativeDocParse(collabId)
+  const buffer = yDocToBuffer(yDoc)
+
+  const form = new FormData()
+  const file = new File([new Blob([buffer])], collabId)
+  form.append('file', file, documentId)
+  form.append('type', 'application/ydoc')
+  form.append('size', buffer.length.toString())
+  form.append('name', collabId)
+  form.append('id', id)
+  form.append('data', new Blob([buffer])) // ?
+
+  await uploadFile(id, form)
+
+  return collabId
 }
