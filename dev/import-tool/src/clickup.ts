@@ -1,8 +1,9 @@
 import {
-  type AttachedData,
+  type AnyAttribute,
+  type AttachedData, type Class, ClassifierKind,
   type CollaborativeDoc,
-  collaborativeDocParse,
-  generateId,
+  collaborativeDocParse, type Data, type Doc,
+  generateId, Hyperlink,
   makeCollaborativeDoc,
   type Ref,
   SortingOrder,
@@ -20,7 +21,8 @@ import { join, parse } from 'path'
 import csv from 'csvtojson'
 import core from '@hcengineering/model-core'
 import { makeRank } from '@hcengineering/rank'
-import task, { createProjectType, type ProjectType, type TaskType } from '@hcengineering/task'
+import task, { createProjectType, type ProjectType, type TaskType, type Task } from '@hcengineering/task'
+import { getEmbeddedLabel } from '@hcengineering/platform'
 
 type ClickupId = string
 type HulyId = string
@@ -272,10 +274,98 @@ async function importIssueDescription (
   return collabId
 }
 
+export interface ClickupIssue extends Issue {
+  clickupId: string
+}
+
+async function createSimpleAttribute (
+  client: TxOperations,
+  defaultValue: string,
+  mixinClass: Ref<Class<Doc>>
+): Promise<void> {
+  const data: Data<AnyAttribute> = {
+    attributeOf: mixinClass,
+    name: 'ClickUp ID',
+    label: 'ClickUp ID',
+    isCustom: true,
+    type: {
+      _class: core.class.TypeString,
+      label: 'ClickUp ID'
+    },
+    defaultValue
+  }
+  // Create new attribute
+  await client.createDoc(
+    core.class.Attribute,
+    core.space.Model,
+    data,
+    undefined
+  )
+}
+
 export async function createClickUpProjectType (
   client: TxOperations,
   statuses: string[]
 ): Promise<void> {
+  // Create target class for custom field.
+  // NOTE: it is important for this id to be consistent when re-creating the same
+  // task type with the same id as it will happen during every migration if type is created by the system
+  // const targetClassId = `${CLICKUP_TASK_TYPE_ID}:type:mixin` as Ref<Class<Task>>
+  // const ofClassClass = client.getHierarchy().getClass(tracker.class.Issue)
+  //
+  // const mixinId = await client.createDoc(
+  //   core.class.Mixin,
+  //   core.space.Model,
+  //   {
+  //     extends: tracker.class.Issue, // ClickupIssue
+  //     kind: ClassifierKind.MIXIN,
+  //     label: ofClassClass.label,
+  //     icon: ofClassClass.icon,
+  //     hidden: false
+  //   },
+  //   targetClassId
+  // )
+  //
+  // await client.createMixin(
+  //   targetClassId,
+  //   core.class.Mixin,
+  //   core.space.Model,
+  //   task.mixin.TaskTypeClass, {
+  //     taskType: CLICKUP_TASK_TYPE_ID,
+  //     projectType: CLICKUP_PROJECT_TYPE_ID
+  //   })
+  //
+  // if (!client.getHierarchy().hasMixin(projectInst, github.mixin.GithubProject)) {
+  //   // We need to add GithubProject mixin
+  //   const mixinId = await client.createDoc(core.class.Mixin, core.space.Model, {
+  //     extends: github.mixin.GithubIssue,
+  //     kind: ClassifierKind.MIXIN,
+  //     label: getEmbeddedLabel(projectInst.name),
+  //     hidden: false,
+  //     icon: github.icon.Github
+  //   })
+  //   await client.createMixin(
+  //     projectInst._id,
+  //     tracker.class.Issue,
+  //     core.space.Space,
+  //     github.mixin.GithubProject,
+  //     {
+  //       integration: integration._id,
+  //       repositories: [],
+  //       mixinClass: mixinId,
+  //       mappings: []
+  //     }
+  //   )
+  // }
+
+  // await this.client.createMixin(targetClassId, tracker.class.Issue, prj._id, github.mixin.GithubIssue, {
+  //   githubNumber: issueExternal.number,
+  //   url: issueExternal.url,
+  //   repository: repo,
+  //   descriptionLocked: isDescriptionLocked
+  // })
+  // await this.client.createMixin<Issue, Issue>(issueId, github.mixin.GithubIssue, prj._id, prj.mixinClass, {})
+
   await createProjectType(client, {
     name: 'ClickUp project',
     descriptor: tracker.descriptors.ProjectType,
@@ -290,6 +380,7 @@ export async function createClickUpProjectType (
     kind: 'both',
     name: 'ClickUp issue',
     ofClass: tracker.class.Issue,
+    // targetClass: targetClassId,
     statusCategories: [task.statusCategory.UnStarted],
     statusClass: tracker.class.IssueStatus,
     icon: tracker.icon.Issue,
