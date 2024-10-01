@@ -15,7 +15,8 @@ import {
 } from '@hcengineering/core'
 import { type FileUploader } from './fileUploader'
 import document, { type Document, type Teamspace } from '@hcengineering/document'
-import tracker, { IssuePriority, type Issue, type Project } from '@hcengineering/tracker'
+import tracker from '@hcengineering/tracker'
+import pluginState, { type Issue, IssuePriority, type Project } from '@hcengineering/tracker'
 import { jsonToYDocNoSchema, parseMessageMarkdown } from '@hcengineering/text'
 import { yDocToBuffer } from '@hcengineering/collaboration'
 import { readdir, readFile } from 'fs/promises'
@@ -23,9 +24,16 @@ import { join, parse } from 'path'
 import csv from 'csvtojson'
 import core from '@hcengineering/model-core'
 import { makeRank } from '@hcengineering/rank'
-import task, { type Task, type ProjectType, type TaskType, type TaskStatusFactory, type TaskTypeWithFactory } from '@hcengineering/task'
-import { getEmbeddedLabel, translate } from '@hcengineering/platform'
-import pluginState from '@hcengineering/tracker'
+import task, {
+  calculateStatuses, createProjectType,
+  type ProjectType,
+  type Task,
+  type TaskStatusFactory,
+  type TaskType,
+  type TaskTypeWithFactory
+} from '@hcengineering/task'
+import { getEmbeddedLabel } from '@hcengineering/platform'
+import { createStatuses } from './importer/importer'
 
 type ClickupId = string
 type HulyId = string
@@ -69,37 +77,65 @@ StatusMap.set('выполнено', tracker.status.Done)
 const DEFAULT_PROJECT_FIXME = '66f67c4da0935ea73e985ba4' as Ref<Project>
 const CLICKUP_PROJECT_TYPE_ID = '66f93d911c6b497d54ad5675' as Ref<ProjectType>
 
+async function processClickupDocument (
+  fullPath: string,
+  client: TxOperations,
+  uploadFile: (id: string, data: any) => Promise<any>,
+  docName: string,
+  teamspace: string & {
+    __ref: Teamspace
+  }
+) {
+  const data = await readFile(fullPath)
+  await importPageDocument(client, uploadFile, docName, data, teamspace)
+}
+
+async function processClickupTasks (
+  fullPath: string,
+  client: TxOperations,
+  uploadFile: (id: string, data: any) => Promise<any>
+): Promise<void> {
+  const jsonArray = await csv().fromFile(fullPath)
+  console.log(jsonArray)
+
+  const statuses: string[] = []
+  for (const json of jsonArray) {
+    const clickupTask = json as ClickupTask
+
+    statuses.push(clickupTask.Status)
+
+    console.log(clickupTask)
+    const issue = convertClickupToHullyIssue(clickupTask)
+    console.log(issue)
+
+    // await importIssue(client, uploadFile, issue, DEFAULT_PROJECT_FIXME)
+    // console.log(issue)
+  }
+  console.log(statuses)
+  console.log(statuses)
+
+  await createClickUpProjectType(client, statuses)
+}
+
 export async function importClickUp (
   client: TxOperations,
   uploadFile: FileUploader,
   dir: string,
   teamspace: Ref<Teamspace>
 ): Promise<void> {
-  // const files = await readdir(dir, { recursive: true })
-  // console.log(files)
+  const files = await readdir(dir, { recursive: true })
+  console.log(files)
 
-  await createProjectType(client)
-  // for (const file of files) {
-  //   const parsedFileName = parse(file)
-  //   const extension = parsedFileName.ext.toLowerCase()
-  //   const fullPath = join(dir, file)
-  //   if (extension === '.md') {
-  //     const data = await readFile(fullPath)
-  //     await importPageDocument(client, uploadFile, parsedFileName.name, data, teamspace)
-  //   } else if (extension === '.csv') {
-  //     const jsonArray = await csv().fromFile(fullPath)
-  //     console.log(jsonArray)
-  //     for (const json of jsonArray) {
-  //       const clickupTask = json as ClickupTask
-  //       console.log(clickupTask)
-  //       const issue = convertClickupToHullyIssue(clickupTask)
-  //       console.log(issue)
-
-  //       await importIssue(client, uploadFile, issue, DEFAULT_PROJECT_FIXME)
-  //       console.log(issue)
-  //     }
-  //   }
-  // }
+  for (const file of files) {
+    const parsedFileName = parse(file)
+    const extension = parsedFileName.ext.toLowerCase()
+    const fullPath = join(dir, file)
+    if (extension === '.md') {
+      await processClickupDocument(fullPath, client, uploadFile, parsedFileName.name, teamspace)
+    } else if (extension === '.csv') {
+      await processClickupTasks(fullPath, client, uploadFile)
+    }
+  }
 }
 
 function convertClickupToHullyIssue (task: ClickupTask): HulyIssue {
@@ -249,67 +285,97 @@ async function importIssueDescription (
   return collabId
 }
 
-export async function createProjectType (
-  client: TxOperations
-): Promise<Ref<ProjectType>> {
-  const name = 'ClickUp project'
-  const descriptor = tracker.descriptors.ProjectType
-
-  const categoryObj = client.getModel().findObject(descriptor)
-  if (categoryObj === undefined) {
-    throw new Error('category is not found in model')
-  }
-
-  const baseClassClass = client.getHierarchy().getClass(categoryObj.baseClass)
-
-  // todo: it is important for this id to be consistent when re-creating the same
-  // project type with the same id as it will happen during every migration if type is created by the system
-  const targetProjectClassId = `${CLICKUP_PROJECT_TYPE_ID}:type:mixin` as Ref<Class<Doc>>
-
-  const statuses = new Set<Ref<Status>>()
-  const taskType = await createTaskType(client, CLICKUP_PROJECT_TYPE_ID, statuses)
-
-  const tmpl = await client.createDoc(
-    task.class.ProjectType,
-    core.space.Model,
-    {
-      shortDescription: 'For issues imported from ClickUp',
-      descriptor,
-      roles: 0,
-      tasks: [taskType],
-      name,
-      statuses: [],
-      targetClass: targetProjectClassId,
-      classic: true,
-      description: ''
-    },
-    CLICKUP_PROJECT_TYPE_ID
-  )
-
-  // Mixin to hold custom fields of this project type
-  await client.createDoc(
-    core.class.Mixin,
-    core.space.Model,
-    {
-      extends: categoryObj.baseClass,
-      kind: ClassifierKind.MIXIN,
-      label: getEmbeddedLabel(name),
-      icon: baseClassClass.icon
-    },
-    targetProjectClassId
-  )
-
-  await client.createMixin(targetProjectClassId, core.class.Mixin, core.space.Model, task.mixin.ProjectTypeClass, {
-    projectType: CLICKUP_PROJECT_TYPE_ID
-  })
-
-  return tmpl
+export async function createClickUpProjectType (
+  client: TxOperations,
+  statuses: string[]
+): Promise<void> {
+  const taskId = generateId<TaskType>()
+  await createProjectType(client, {
+    name: 'CLICKUO project',
+    descriptor: tracker.descriptors.ProjectType,
+    shortDescription: 'For issues imported from ClickUp',
+    description: '',
+    tasks: [],
+    roles: 0,
+    classic: true
+  }, [{
+    _id: taskId,
+    descriptor: tracker.descriptors.Issue,
+    kind: 'both',
+    name: 'CLICKUO issue',
+    ofClass: tracker.class.Issue,
+    statusCategories: [task.statusCategory.UnStarted],
+    statusClass: tracker.class.IssueStatus,
+    icon: tracker.icon.Issue,
+    color: 0,
+    allowedAsChildOf: [taskId],
+    factory: createStatesData([{ category: task.statusCategory.UnStarted, statuses }])
+  }],
+  CLICKUP_PROJECT_TYPE_ID)
+  // const name = 'ClickUp project'
+  // const descriptor = tracker.descriptors.ProjectType
+  //
+  // const categoryObj = client.getModel().findObject(descriptor)
+  // if (categoryObj === undefined) {
+  //   throw new Error('category is not found in model')
+  // }
+  //
+  // const baseClassClass = client.getHierarchy().getClass(categoryObj.baseClass)
+  //
+  // // todo: it is important for this id to be consistent when re-creating the same
+  // // project type with the same id as it will happen during every migration if type is created by the system
+  // const targetProjectClassId = `${CLICKUP_PROJECT_TYPE_ID}:type:mixin` as Ref<Class<Doc>>
+  //
+  // const taskType = await createTaskType(client, CLICKUP_PROJECT_TYPE_ID, ['unclear'])
+  //
+  // const tmpl = await client.createDoc(
+  //   task.class.ProjectType,
+  //   core.space.Model,
+  //   {
+  //     shortDescription: 'For issues imported from ClickUp',
+  //     descriptor,
+  //     roles: 0,
+  //     tasks: [taskType],
+  //     name,
+  //     statuses: calculateStatuses({ tasks: [taskType], statuses: ['unclear'] }, tasksData, []),
+  //     targetClass: targetProjectClassId,
+  //     classic: true,
+  //     description: ''
+  //   },
+  //   CLICKUP_PROJECT_TYPE_ID
+  // )
+  //
+  // // Mixin to hold custom fields of this project type
+  // await client.createDoc(
+  //   core.class.Mixin,
+  //   core.space.Model,
+  //   {
+  //     extends: categoryObj.baseClass,
+  //     kind: ClassifierKind.MIXIN,
+  //     label: getEmbeddedLabel(name),
+  //     icon: baseClassClass.icon
+  //   },
+  //   targetProjectClassId
+  // )
+  //
+  // await client.createMixin(targetProjectClassId, core.class.Mixin, core.space.Model, task.mixin.ProjectTypeClass, {
+  //   projectType: CLICKUP_PROJECT_TYPE_ID
+  // })
+  //
+  // return tmpl
 }
+
+export const baseIssueTaskStatuses: TaskStatusFactory[] = [
+  {
+    category: task.statusCategory.UnSorted,
+    statuses: ['unknown']
+  }
+]
 
 async function createTaskType (
   client: TxOperations,
   projectType: Ref<ProjectType>,
-  statues: Set<Ref<Status>>
+  statusNames: string[]
 ): Promise<Ref<TaskType>> {
   const taskId = generateId<TaskType>()
 
@@ -324,16 +390,12 @@ async function createTaskType (
     icon: tracker.icon.Issue,
     color: 0,
     allowedAsChildOf: [taskId],
-    factory: []
+    factory: createStatesData([{ category: task.statusCategory.UnStarted, statuses: statusNames }])
   }
 
   const { factory, ...data } = taskType
 
-  // const statuses = await createStates(client, factory, data.statusClass)
-  const statuses: Ref<Status>[] = []
-  for (const st of statuses) {
-    statues.add(st)
-  }
+  const statuses = await createStatuses(client, factory, data.statusClass)
   const taskData = {
     ...data,
     parent: projectType,
@@ -381,7 +443,7 @@ function createStatesData (data: TaskStatusFactory[]): Omit<Data<Status>, 'rank'
         ofAttribute: pluginState.attribute.IssueStatus,
         name: Array.isArray(sName) ? sName[0] : sName,
         color: Array.isArray(sName) ? sName[1] : undefined,
-        category: category.category
+        category: task.statusCategory.UnStarted
       })
     }
   }
