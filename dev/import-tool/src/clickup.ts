@@ -23,8 +23,9 @@ import { join, parse } from 'path'
 import csv from 'csvtojson'
 import core from '@hcengineering/model-core'
 import { makeRank } from '@hcengineering/rank'
-import task, { type ProjectType, type TaskType } from '@hcengineering/task'
-import { getEmbeddedLabel } from '@hcengineering/platform'
+import task, { type Task, type ProjectType, type TaskType, type TaskStatusFactory, type TaskTypeWithFactory } from '@hcengineering/task'
+import { getEmbeddedLabel, translate } from '@hcengineering/platform'
+import pluginState from '@hcengineering/tracker'
 
 type ClickupId = string
 type HulyId = string
@@ -66,6 +67,7 @@ const StatusMap = new Map <string, Ref<Status>>()
 StatusMap.set('выполнено', tracker.status.Done)
 
 const DEFAULT_PROJECT_FIXME = '66f67c4da0935ea73e985ba4' as Ref<Project>
+const CLICKUP_PROJECT_TYPE_ID = '66f93d911c6b497d54ad5675' as Ref<ProjectType>
 
 export async function importClickUp (
   client: TxOperations,
@@ -250,7 +252,6 @@ async function importIssueDescription (
 export async function createProjectType (
   client: TxOperations
 ): Promise<Ref<ProjectType>> {
-  const _tasks: Ref<TaskType>[] = []
   const name = 'ClickUp project'
   const descriptor = tracker.descriptors.ProjectType
 
@@ -261,10 +262,12 @@ export async function createProjectType (
 
   const baseClassClass = client.getHierarchy().getClass(categoryObj.baseClass)
 
-  const id = generateId<ProjectType>()
   // todo: it is important for this id to be consistent when re-creating the same
   // project type with the same id as it will happen during every migration if type is created by the system
-  const targetProjectClassId = `${id}:type:mixin` as Ref<Class<Doc>>
+  const targetProjectClassId = `${CLICKUP_PROJECT_TYPE_ID}:type:mixin` as Ref<Class<Doc>>
+
+  const statuses = new Set<Ref<Status>>()
+  const taskType = await createTaskType(client, CLICKUP_PROJECT_TYPE_ID, statuses)
 
   const tmpl = await client.createDoc(
     task.class.ProjectType,
@@ -273,14 +276,14 @@ export async function createProjectType (
       shortDescription: 'For issues imported from ClickUp',
       descriptor,
       roles: 0,
-      tasks: _tasks,
+      tasks: [taskType],
       name,
       statuses: [],
       targetClass: targetProjectClassId,
       classic: true,
       description: ''
     },
-    id
+    CLICKUP_PROJECT_TYPE_ID
   )
 
   // Mixin to hold custom fields of this project type
@@ -297,8 +300,90 @@ export async function createProjectType (
   )
 
   await client.createMixin(targetProjectClassId, core.class.Mixin, core.space.Model, task.mixin.ProjectTypeClass, {
-    projectType: id
+    projectType: CLICKUP_PROJECT_TYPE_ID
   })
 
   return tmpl
+}
+
+async function createTaskType (
+  client: TxOperations,
+  projectType: Ref<ProjectType>,
+  statues: Set<Ref<Status>>
+): Promise<Ref<TaskType>> {
+  const taskId = generateId<TaskType>()
+
+  const taskType: TaskTypeWithFactory = {
+    _id: taskId,
+    descriptor: tracker.descriptors.Issue,
+    kind: 'both',
+    name: 'ClickUp issue',
+    ofClass: tracker.class.Issue,
+    statusCategories: [],
+    statusClass: tracker.class.IssueStatus,
+    icon: tracker.icon.Issue,
+    color: 0,
+    allowedAsChildOf: [taskId],
+    factory: []
+  }
+
+  const { factory, ...data } = taskType
+
+  // const statuses = await createStates(client, factory, data.statusClass)
+  const statuses: Ref<Status>[] = []
+  for (const st of statuses) {
+    statues.add(st)
+  }
+  const taskData = {
+    ...data,
+    parent: projectType,
+    statuses
+  }
+
+  const ofClassClass = client.getHierarchy().getClass(data.ofClass)
+
+  taskData.icon = ofClassClass.icon
+
+  if (taskData.targetClass === undefined) {
+    // Create target class for custom field.
+    // NOTE: it is important for this id to be consistent when re-creating the same
+    // task type with the same id as it will happen during every migration if type is created by the system
+    const targetClassId = `${taskId}:type:mixin` as Ref<Class<Task>>
+    taskData.targetClass = targetClassId
+
+    await client.createDoc(
+      core.class.Mixin,
+      core.space.Model,
+      {
+        extends: data.ofClass,
+        kind: ClassifierKind.MIXIN,
+        label: ofClassClass.label,
+        icon: ofClassClass.icon
+      },
+      targetClassId
+    )
+
+    await client.createMixin(targetClassId, core.class.Mixin, core.space.Model, task.mixin.TaskTypeClass, {
+      taskType: taskId,
+      projectType
+    })
+  }
+  await client.createDoc(task.class.TaskType, core.space.Model, taskData as Data<TaskType>, taskId)
+  return taskId
+}
+
+function createStatesData (data: TaskStatusFactory[]): Omit<Data<Status>, 'rank'>[] {
+  const states: Omit<Data<Status>, 'rank'>[] = []
+
+  for (const category of data) {
+    for (const sName of category.statuses) {
+      states.push({
+        ofAttribute: pluginState.attribute.IssueStatus,
+        name: Array.isArray(sName) ? sName[0] : sName,
+        color: Array.isArray(sName) ? sName[1] : undefined,
+        category: category.category
+      })
+    }
+  }
+  return states
 }
