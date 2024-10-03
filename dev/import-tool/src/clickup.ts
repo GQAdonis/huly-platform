@@ -23,13 +23,10 @@ import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
 import task, { createProjectType, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
-import { type ImportIssue } from './importer/importer'
-
-type ClickupId = string
-type HulyId = string
+import { importIssue, type ImportIssue } from './importer/importer'
 
 interface ClickupTask {
-  'Task ID': ClickupId
+  'Task ID': string
   'Task Name': string
   'Task Content': string
   'Status': string
@@ -82,20 +79,25 @@ async function processClickupDocument (
   await importPageDocument(client, uploadFile, docName, data, teamspace)
 }
 
+async function traverseCsv (file: string, callback: (json: ClickupTask) => Promise<void> | void): Promise<void> {
+  const jsonArray = await csv().fromFile(file)
+  for (const json of jsonArray) {
+    const clickupTask = json as ClickupTask
+    callback(clickupTask)
+  }
+}
+
 async function processClickupTasks (
-  fullPath: string,
+  file: string,
   client: TxOperations,
   uploadFile: (id: string, data: any) => Promise<any>
 ): Promise<void> {
-  const jsonArray = await csv().fromFile(fullPath)
-  console.log(jsonArray)
-
-  const clickupHulyIdMap = new Map<ClickupId, HulyId>()
+  const clickupHulyIdMap = new Map<string, Ref<Issue>>()
   const statuses = new Set<string>()
   const projects = new Set<string>()
   const persons = new Set<string>()
-  for (const json of jsonArray) {
-    const clickupTask = json as ClickupTask
+
+  await traverseCsv(file, (clickupTask) => {
     console.log(clickupTask)
     clickupHulyIdMap.set(clickupTask['Task ID'], generateId())
     statuses.add(clickupTask.Status)
@@ -104,16 +106,32 @@ async function processClickupTasks (
     // clickupTask.Assignees.forEach((name) => {
     //   persons.add(name)
     // })
-  }
+  })
   console.log(clickupHulyIdMap)
   console.log(statuses)
   console.log(projects)
   console.log(persons)
 
   const projectType = await createClickUpProjectType(client, Array.from(statuses))
+
+  const projectIdMap = new Map<string, Ref<Project>>()
   for (const project of projects) {
-    createProject(client, project, projectType)
+    const hulyProjectId = await createProject(client, project, projectType)
+    projectIdMap.set(project, hulyProjectId)
   }
+
+  await traverseCsv(file, async (clickupTask) => {
+    console.log(clickupTask)
+    const hulyIssue = convertToImportIssue(clickupTask)
+    console.log(hulyIssue)
+    const hulyId = clickupHulyIdMap.get(clickupTask['Task ID'])
+    const hulyProjectId = projectIdMap.get(clickupTask['Space Name'])
+    if (hulyId === undefined || hulyProjectId === undefined) {
+      console.error('AAAAAAAAAA') // todo
+      return
+    }
+    await importIssue(client, uploadFile, hulyId, hulyIssue, hulyProjectId)
+  })
 }
 
 function convertToImportIssue (task: ClickupTask): ImportIssue {
@@ -232,7 +250,7 @@ async function createProject (
     owners: [],
     archived: false,
     autoJoin: false,
-    identifier: 'CLICK',
+    identifier: 'AAA',
     sequence: 0,
     defaultAssignee: undefined,
     defaultIssueStatus: '' as Ref<IssueStatus>,
