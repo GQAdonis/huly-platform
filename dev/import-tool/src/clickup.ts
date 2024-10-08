@@ -103,9 +103,14 @@ async function processClickupTasks (
     statuses.add(clickupTask.Status)
     projects.add(clickupTask['Space Name'])
 
-    // clickupTask.Assignees.forEach((name) => {
-    //   persons.add(name)
-    // })
+    clickupTask.Assignees.forEach((assignee) => {
+      if (assignee.length > 2) {
+        const names = assignee.substr(1, assignee.length - 2).split(',')
+        for (const name of names) {
+          persons.add(name)
+        }
+      }
+    })
   })
   console.log(clickupHulyIdMap)
   console.log(statuses)
