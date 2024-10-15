@@ -1,14 +1,17 @@
 import core, {
-  type AttachedData,
   type Class,
   collaborativeDocParse,
+  Data,
+  DocumentQuery,
   generateId,
   makeCollaborativeDoc,
   type Ref,
+  Status,
+  Timestamp,
   type TxOperations
 } from '@hcengineering/core'
 import { type FileUploader } from './fileUploader'
-import document, { type Document, type Teamspace } from '@hcengineering/document'
+import document, { getFirstRank, type Document, type Teamspace } from '@hcengineering/document'
 import tracker from '@hcengineering/tracker'
 import pluginState, {
   type Issue,
@@ -22,7 +25,7 @@ import { yDocToBuffer } from '@hcengineering/collaboration'
 import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
-import task, { createProjectType, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
+import task, { createProjectType, makeRank, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
 import { importIssue, type ImportIssue } from './importer/importer'
 
 interface ClickupTask {
@@ -32,7 +35,7 @@ interface ClickupTask {
   'Status': string
   'Parent ID': string
   'Attachments': string[]
-  'Assignees': string[]
+  'Assignees': string,
   'Priority'?: number
   'Space Name': string
   'Checklists': string // todo: obj
@@ -41,8 +44,14 @@ interface ClickupTask {
   'Time Spent': number
 }
 
-const CLICKUP_PROJECT_TYPE_ID = '66f93d911c6b497d54ad5675' as Ref<ProjectType>
-const CLICKUP_TASK_TYPE_ID = '66fbf115093abbaab6dd54b7' as Ref<TaskType>
+interface ClickupComment {
+  'by': string,
+  'date': Timestamp,
+  'text': string
+}
+
+const CLICKUP_PROJECT_TYPE_ID = generateId<ProjectType>()
+const CLICKUP_TASK_TYPE_ID = generateId<TaskType>()
 const CLICKUP_MIXIN_ID = `${CLICKUP_TASK_TYPE_ID}:type:mixin` as Ref<Class<Task>>
 
 export async function importClickUp (
@@ -83,7 +92,7 @@ async function traverseCsv (file: string, callback: (json: ClickupTask) => Promi
   const jsonArray = await csv().fromFile(file)
   for (const json of jsonArray) {
     const clickupTask = json as ClickupTask
-    callback(clickupTask)
+    await callback(clickupTask)
   }
 }
 
@@ -96,6 +105,7 @@ async function processClickupTasks (
   const statuses = new Set<string>()
   const projects = new Set<string>()
   const persons = new Set<string>()
+  const emails = new Set<string>()
 
   await traverseCsv(file, (clickupTask) => {
     console.log(clickupTask)
@@ -103,19 +113,25 @@ async function processClickupTasks (
     statuses.add(clickupTask.Status)
     projects.add(clickupTask['Space Name'])
 
-    clickupTask.Assignees.forEach((assignee) => {
-      if (assignee.length > 2) {
-        const names = assignee.substr(1, assignee.length - 2).split(',')
-        for (const name of names) {
-          persons.add(name)
+    clickupTask.Assignees.substring(1, clickupTask.Assignees.length - 1).split(',')
+      .filter((name) => name.length > 0)
+      .forEach((name) => persons.add(name))
+
+    JSON.parse(clickupTask.Comments)
+      .forEach((comment: ClickupComment) => {
+        if (comment.by === undefined) {
+          console.log( clickupTask)
+          console.log( comment)
         }
-      }
-    })
+        emails.add(comment.by)
   })
-  console.log(clickupHulyIdMap)
-  console.log(statuses)
-  console.log(projects)
+  })
+
+  // console.log(clickupHulyIdMap)
+  // console.log(statuses)
+  // console.log(projects)
   console.log(persons)
+  console.log(emails)
 
   const projectType = await createClickUpProjectType(client, Array.from(statuses))
 
@@ -127,7 +143,7 @@ async function processClickupTasks (
 
   await traverseCsv(file, async (clickupTask) => {
     console.log(clickupTask)
-    const hulyIssue = convertToImportIssue(clickupTask)
+    const hulyIssue = await convertToImportIssue(client, clickupTask)
     console.log(hulyIssue)
     const hulyId = clickupHulyIdMap.get(clickupTask['Task ID'])
     const hulyProjectId = projectIdMap.get(clickupTask['Space Name'])
@@ -139,14 +155,25 @@ async function processClickupTasks (
   })
 }
 
-function convertToImportIssue (task: ClickupTask): ImportIssue {
-  const estimation = task['Time Estimated']
-  const remainingTime = estimation - task['Time Spent']
+async function convertToImportIssue (client: TxOperations, clickup: ClickupTask): Promise<ImportIssue> {
+  const query: DocumentQuery<Status> = { 
+    name: clickup.Status,
+    ofAttribute: pluginState.attribute.IssueStatus,
+    category: task.statusCategory.UnStarted
+  }
+  
+  const status = await client.findOne(tracker.class.IssueStatus, query)
+  if (status === undefined) {
+    throw new Error("Issue status not found: " + clickup.Status)
+  }
+
+  const estimation = clickup['Time Estimated']
+  const remainingTime = estimation - clickup['Time Spent']
   return {
-    title: '[' + task['Task ID'] + '] ' + task['Task Name'],
-    description: task['Task Content'],
+    title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
+    description: clickup['Task Content'],
     assignee: null, // todo
-    status: tracker.status.Todo, // todo
+    status: status._id,
     priority: IssuePriority.NoPriority, // todo
     estimation,
     remainingTime
@@ -164,7 +191,7 @@ async function importPageDocument (
   const json = parseMessageMarkdown(md ?? '', 'image://')
 
   const id = generateId<Document>()
-  const collabId = makeCollaborativeDoc(id, 'content')
+  const collabId = makeCollaborativeDoc(id, 'description')
   const yDoc = jsonToYDocNoSchema(json, 'content')
   const { documentId } = collaborativeDocParse(collabId)
   const buffer = yDocToBuffer(yDoc)
@@ -180,26 +207,23 @@ async function importPageDocument (
 
   await uploadFile(id, form)
 
-  const attachedData: AttachedData<Document> = {
-    name,
-    content: collabId,
+  const parent = document.ids.NoParent
+  const lastRank = await getFirstRank(client, space, parent)
+  const rank = makeRank(lastRank, undefined)
+
+  const attachedData: Data<Document> = {
+    title: name,
+    description: collabId,
+    parent,
     attachments: 0,
-    children: 0,
     embeddings: 0,
     labels: 0,
     comments: 0,
-    references: 0
+    references: 0,
+    rank
   }
 
-  await client.addCollection(
-    document.class.Document,
-    space,
-    document.ids.NoParent,
-    document.class.Document,
-    'children',
-    attachedData,
-    id
-  )
+  await client.createDoc(document.class.Document, space, attachedData, id)
 }
 
 export interface ClickupIssue extends Issue {
