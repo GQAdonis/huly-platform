@@ -28283,13 +28283,7 @@ packages:
     dev: false
 
   file:projects/import-tool.tgz:
-<<<<<<< HEAD
     resolution: {integrity: sha512-QBo/RgAGnie95pESqQNJUQSCpQi1rEpXqZz1G1zZMfhAvisZtW2XutmaGMS1oDu2ZB05pk8WOO8x6bfdc+keZg==, tarball: file:projects/import-tool.tgz}
-||||||| parent of 507de4a17c (Empty task with title)
-    resolution: {integrity: sha512-d0EQS0lr/QDxVxNZN07E8DTR2gJT583KNX8w3vyWRySeaw+GqN3QX8EwSsRiIaMnFVtToI/tZD4Yj+GMPA5XOA==, tarball: file:projects/import-tool.tgz}
-=======
-    resolution: {integrity: sha512-uPBfp64oaHzmo5TVw5LnetDuKUiZm3yYvzKhngRk0Rhcf1Wl5UpUqs0ttSco8qHM4izzpRXF0OmFV0Ep8JTQnw==, tarball: file:projects/import-tool.tgz}
->>>>>>> 507de4a17c (Empty task with title)
     name: '@rush-temp/import-tool'
     version: 0.0.0
     dependencies:
