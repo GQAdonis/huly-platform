@@ -34,8 +34,8 @@ interface ClickupTask {
   'Task Content': string
   'Status': string
   'Parent ID': string
-  'Attachments': string[]
-  'Assignees': string,
+  'Attachments': string
+  'Assignees': string
   'Priority'?: number
   'Space Name': string
   'Checklists': string // todo: obj
@@ -48,6 +48,11 @@ interface ClickupComment {
   'by': string,
   'date': Timestamp,
   'text': string
+}
+
+interface ClickupAttachment {
+  'title': string,
+  'url': string
 }
 
 const CLICKUP_PROJECT_TYPE_ID = generateId<ProjectType>()
@@ -165,6 +170,10 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
 
   const estimation = clickup['Time Estimated']
   const remainingTime = estimation - clickup['Time Spent']
+
+  const comments = convertToImportComments(clickup.Comments)
+  comments.push(convertAttachmentsToComment(clickup.Attachments))
+  
   return {
     title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
     description: `${content}\n\n---\n${checklists}`, // todo: test all the combinations
@@ -173,7 +182,7 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
     priority: IssuePriority.NoPriority, // todo
     estimation,
     remainingTime,
-    comments : convertToImportComments(clickup.Comments)
+    comments
   }
 }
 
@@ -185,6 +194,16 @@ function convertToImportComments(clickup: string): ImportComment[] {
         date: new Date(comment.date).getTime()
       }
     })
+}
+
+function convertAttachmentsToComment(clickup: string): ImportComment {
+  const urls: string[] = JSON.parse(clickup)
+    .map((attachment: ClickupAttachment) => {
+       return `[${attachment.title}](${attachment.url})`
+    })
+  return {
+    text: urls.join('\n')
+  }
 }
 
 function convertChecklistsToMarkdown(clickup: string): string {
