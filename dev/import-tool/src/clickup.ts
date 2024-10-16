@@ -174,7 +174,7 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
   const remainingTime = estimation - clickup['Time Spent']
   return {
     title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
-    description: `${content}\n\n---\n${checklists}`,
+    description: `${content}\n\n---\n${checklists}`, // todo: test all the combinations
     assignee: null, // todo
     status: status._id,
     priority: IssuePriority.NoPriority, // todo
@@ -187,7 +187,7 @@ function convertChecklistsToMarkdown(clickup: string): string {
   const checklists = JSON.parse(clickup)
   let huly: string = '\n'
   for (const [key, values] of Object.entries(checklists)) {
-    huly += `*${key}*\n`
+    huly += `**${key}**\n`
     for (const value of (values as string[])) {
       huly += `* [ ] ${value} \n` // todo: test and fix for checked items
     }
