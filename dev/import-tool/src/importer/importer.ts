@@ -1,10 +1,14 @@
 import {
+  Account,
+  AttachedData,
   type CollaborativeDoc,
   collaborativeDocParse,
+  generateId,
   makeCollaborativeDoc,
   type Ref,
   SortingOrder,
   type Status,
+  Timestamp,
   type TxOperations
 } from '@hcengineering/core'
 import { type Person } from '@hcengineering/contact'
@@ -14,6 +18,7 @@ import core from '@hcengineering/model-core'
 import task, { makeRank, type TaskType } from '@hcengineering/task'
 import { jsonToYDocNoSchema, parseMessageMarkdown } from '@hcengineering/text'
 import { yDocToBuffer } from '@hcengineering/collaboration'
+import chunter, { ChatMessage } from '@hcengineering/chunter'
 
 export interface ImportTaskType {
   name: string
@@ -32,7 +37,8 @@ export interface ImportPerson {
 
 export interface ImportComment {
   text: string
-  author: Ref<Person>
+  author?: Ref<Account> // todo: person vs account
+  date?: Timestamp
 }
 
 export interface ImportIssue {
@@ -43,7 +49,7 @@ export interface ImportIssue {
   priority: IssuePriority
   estimation: number
   remainingTime: number
-  comments?: ImportComment[]
+  comments: ImportComment[]
   collaborators?: Ref<Person>[]
 }
 
@@ -87,7 +93,7 @@ export async function importIssue (
     status: data.status,
     priority: data.priority,
     rank: makeRank(lastOne?.rank, undefined),
-    comments: data.comments?.length,
+    comments: data.comments.length,
     subIssues: 0, // todo
     dueDate: null,
     parents: [], // todo
@@ -108,6 +114,10 @@ export async function importIssue (
     taskToCreate,
     id
   )
+
+  data.comments.forEach((comment: ImportComment) => {
+    importComment(client, id, comment, space)
+  })
 }
 
 async function importIssueDescription (
@@ -134,4 +144,28 @@ async function importIssueDescription (
   await uploadFile(id, form)
 
   return collabId
+}
+
+export async function importComment (
+  client: TxOperations,
+  issueId: Ref<Issue>,
+  data: ImportComment,
+  space: Ref<Project>
+): Promise<void> {
+  const value: AttachedData<ChatMessage> = {
+    message: data.text,
+    attachments: 0
+  }
+    await client.addCollection(
+      chunter.class.ChatMessage,
+      space,
+      issueId,
+      tracker.class.Issue,
+      'comments',
+      value,
+      generateId(),
+      // new Date(data.created_at).getTime(),
+      data.date,
+      data.author
+    )
 }

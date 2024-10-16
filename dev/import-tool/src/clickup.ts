@@ -26,7 +26,7 @@ import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
 import task, { createProjectType, makeRank, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
-import { importIssue, type ImportIssue } from './importer/importer'
+import { ImportComment, importIssue, type ImportIssue } from './importer/importer'
 
 interface ClickupTask {
   'Task ID': string
@@ -108,7 +108,6 @@ async function processClickupTasks (
   const emails = new Set<string>()
 
   await traverseCsv(file, (clickupTask) => {
-    console.log(clickupTask)
     clickupHulyIdMap.set(clickupTask['Task ID'], generateId())
     statuses.add(clickupTask.Status)
     projects.add(clickupTask['Space Name'])
@@ -119,10 +118,6 @@ async function processClickupTasks (
 
     JSON.parse(clickupTask.Comments)
       .forEach((comment: ClickupComment) => {
-        if (comment.by === undefined) {
-          console.log( clickupTask)
-          console.log( comment)
-        }
         emails.add(comment.by)
   })
   })
@@ -130,8 +125,8 @@ async function processClickupTasks (
   // console.log(clickupHulyIdMap)
   // console.log(statuses)
   // console.log(projects)
-  console.log(persons)
-  console.log(emails)
+  // console.log(persons)
+  // console.log(emails)
 
   const projectType = await createClickUpProjectType(client, Array.from(statuses))
 
@@ -142,16 +137,14 @@ async function processClickupTasks (
   }
 
   await traverseCsv(file, async (clickupTask) => {
-    console.log(clickupTask)
     const hulyIssue = await convertToImportIssue(client, clickupTask)
-    console.log(hulyIssue)
     const hulyId = clickupHulyIdMap.get(clickupTask['Task ID'])
     const hulyProjectId = projectIdMap.get(clickupTask['Space Name'])
     if (hulyId === undefined || hulyProjectId === undefined) {
-      console.error('AAAAAAAAAA') // todo
-      return
+      throw new Error(`Issue not found: ${hulyId}, ${hulyProjectId}`)
     }
     await importIssue(client, uploadFile, hulyId, hulyIssue, hulyProjectId)
+    console.log("IMPORTED: ", hulyIssue.title)
   })
 }
 
@@ -179,8 +172,19 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
     status: status._id,
     priority: IssuePriority.NoPriority, // todo
     estimation,
-    remainingTime
+    remainingTime,
+    comments : convertToImportComments(clickup.Comments)
   }
+}
+
+function convertToImportComments(clickup: string): ImportComment[] {
+  return JSON.parse(clickup)
+    .map((comment: ClickupComment) => {
+      return {
+        text: comment.text,
+        date: new Date(comment.date).getTime()
+      }
+    })
 }
 
 function convertChecklistsToMarkdown(clickup: string): string {
