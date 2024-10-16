@@ -166,18 +166,40 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
   if (status === undefined) {
     throw new Error("Issue status not found: " + clickup.Status)
   }
+  
+  const content = fixMultilineString(clickup['Task Content'])
+  const checklists = convertChecklistsToMarkdown(clickup.Checklists)
 
   const estimation = clickup['Time Estimated']
   const remainingTime = estimation - clickup['Time Spent']
   return {
     title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
-    description: clickup['Task Content'],
+    description: `${content}\n\n---\n${checklists}`,
     assignee: null, // todo
     status: status._id,
     priority: IssuePriority.NoPriority, // todo
     estimation,
     remainingTime
   }
+}
+
+function convertChecklistsToMarkdown(clickup: string): string {
+  const checklists = JSON.parse(clickup)
+  let huly: string = '\n'
+  for (const [key, values] of Object.entries(checklists)) {
+    huly += `*${key}*\n`
+    for (const value of (values as string[])) {
+      huly += `* [ ] ${value} \n` // todo: test and fix for checked items
+    }
+    huly += '\n'
+  }
+  return huly
+}
+
+function fixMultilineString(content: string) {
+  return content
+    .split('\\n')
+    .join('\n')
 }
 
 async function importPageDocument (
