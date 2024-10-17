@@ -1,7 +1,7 @@
 import attachment, { attachmentId } from '@hcengineering/attachment'
 import {
-  Account,
-  AttachedData,
+  type Account,
+  type AttachedData,
   type CollaborativeDoc,
   collaborativeDocParse,
   generateId,
@@ -9,7 +9,7 @@ import {
   type Ref,
   SortingOrder,
   type Status,
-  Timestamp,
+  type Timestamp,
   type TxOperations,
   type Blob as PlatformBlob
 } from '@hcengineering/core'
@@ -21,7 +21,7 @@ import core from '@hcengineering/model-core'
 import task, { makeRank, type TaskType } from '@hcengineering/task'
 import { jsonToYDocNoSchema, parseMessageMarkdown } from '@hcengineering/text'
 import { yDocToBuffer } from '@hcengineering/collaboration'
-import chunter, { ChatMessage } from '@hcengineering/chunter'
+import chunter, { type ChatMessage } from '@hcengineering/chunter'
 
 import { readdir, stat, readFile } from 'fs/promises'
 import { writeFileSync } from 'fs'
@@ -195,24 +195,24 @@ export async function importComment (
     form.append('data', attach.blob) // ?
 
     await uploadFile(attachmentId, form)
-    
+
     const attachValue = {
-        _id: attachmentId,
-        _class: attachment.class.Attachment,
-        attachedTo: commentId,
-        attachedToClass: chunter.class.ChatMessage,
-        collection: 'attachments',
+      _id: attachmentId,
+      _class: attachment.class.Attachment,
+      attachedTo: commentId,
+      attachedToClass: chunter.class.ChatMessage,
+      collection: 'attachments',
       file: '' as Ref<PlatformBlob>,
       lastModified: Date.now(),
       name: file.name,
       size: file.size,
-      space: space,
+      space,
       type: 'file'
     }
 
     const data = new FormData()
     data.append('file', new File([attach.blob], attach.title))
-    
+
     // await client.createDoc(document.class.Document, space, attachValue, attachmentId)
   }
 }

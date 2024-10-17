@@ -42,7 +42,7 @@ import core from '@hcengineering/model-core'
 import { readdir, stat, readFile } from 'fs/promises'
 import { type Dirent } from 'fs'
 import { basename, join, parse } from 'path'
-import { FileUploader } from './fileUploader'
+import { type FileUploader } from './fileUploader'
 
 interface DocumentMetadata {
   id: string

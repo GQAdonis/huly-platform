@@ -1,13 +1,13 @@
 import core, {
   type Class,
   collaborativeDocParse,
-  Data,
-  DocumentQuery,
+  type Data,
+  type DocumentQuery,
   generateId,
   makeCollaborativeDoc,
   type Ref,
-  Status,
-  Timestamp,
+  type Status,
+  type Timestamp,
   type TxOperations
 } from '@hcengineering/core'
 import { download, type FileUploader } from './fileUploader'
@@ -26,7 +26,7 @@ import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
 import task, { createProjectType, makeRank, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
-import { importComment, ImportComment, importIssue, type ImportIssue } from './importer/importer'
+import { importComment, type ImportComment, importIssue, type ImportIssue } from './importer/importer'
 import attachment from '@hcengineering/model-attachment'
 import { blob } from 'stream/consumers'
 
@@ -34,27 +34,27 @@ interface ClickupTask {
   'Task ID': string
   'Task Name': string
   'Task Content': string
-  'Status': string
+  Status: string
   'Parent ID': string
-  'Attachments': string
-  'Assignees': string
-  'Priority'?: number
+  Attachments: string
+  Assignees: string
+  Priority?: number
   'Space Name': string
-  'Checklists': string // todo: obj
-  'Comments': string // todo: obj[]
+  Checklists: string // todo: obj
+  Comments: string // todo: obj[]
   'Time Estimated': number
   'Time Spent': number
 }
 
 interface ClickupComment {
-  'by': string,
-  'date': Timestamp,
-  'text': string
+  by: string
+  date: Timestamp
+  text: string
 }
 
 interface ClickupAttachment {
-  'title': string,
-  'url': string
+  title: string
+  url: string
 }
 
 const CLICKUP_PROJECT_TYPE_ID = generateId<ProjectType>()
@@ -119,14 +119,14 @@ async function processClickupTasks (
     statuses.add(clickupTask.Status)
     projects.add(clickupTask['Space Name'])
 
-    clickupTask.Assignees.substring(1, clickupTask.Assignees.length - 1).split(',')
+    clickupTask.Assignees.substring(1, clickupTask.Assignees.length - 1)
+      .split(',')
       .filter((name) => name.length > 0)
       .forEach((name) => persons.add(name))
 
-    JSON.parse(clickupTask.Comments)
-      .forEach((comment: ClickupComment) => {
-        emails.add(comment.by)
-  })
+    JSON.parse(clickupTask.Comments).forEach((comment: ClickupComment) => {
+      emails.add(comment.by)
+    })
   })
 
   // console.log(clickupHulyIdMap)
@@ -151,22 +151,22 @@ async function processClickupTasks (
       throw new Error(`Issue not found: ${hulyId}, ${hulyProjectId}`)
     }
     await importIssue(client, uploadFile, hulyId, hulyIssue, hulyProjectId)
-    console.log("IMPORTED: ", hulyIssue.title)
+    console.log('IMPORTED: ', hulyIssue.title)
   })
 }
 
 async function convertToImportIssue (client: TxOperations, clickup: ClickupTask): Promise<ImportIssue> {
-  const query: DocumentQuery<Status> = { 
+  const query: DocumentQuery<Status> = {
     name: clickup.Status,
     ofAttribute: pluginState.attribute.IssueStatus,
     category: task.statusCategory.UnStarted
   }
-  
+
   const status = await client.findOne(tracker.class.IssueStatus, query)
   if (status === undefined) {
-    throw new Error("Issue status not found: " + clickup.Status)
+    throw new Error('Issue status not found: ' + clickup.Status)
   }
-  
+
   const content = fixMultilineString(clickup['Task Content'])
   const checklists = convertChecklistsToMarkdown(clickup.Checklists)
 
@@ -175,7 +175,7 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
 
   const comments = convertToImportComments(clickup.Comments)
   const attachments = await convertAttachmentsToComment(clickup.Attachments)
-  
+
   return {
     title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
     description: `${content}\n\n---\n${checklists}`, // todo: test all the combinations
@@ -188,49 +188,46 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
   }
 }
 
-function convertToImportComments(clickup: string): ImportComment[] {
-  return JSON.parse(clickup)
-    .map((comment: ClickupComment) => {
-      return {
-        text: comment.text,
-        date: new Date(comment.date).getTime()
-      }
-    })
+function convertToImportComments (clickup: string): ImportComment[] {
+  return JSON.parse(clickup).map((comment: ClickupComment) => {
+    return {
+      text: comment.text,
+      date: new Date(comment.date).getTime()
+    }
+  })
 }
 
-type ClickupChecklist = {
-  [x: string]: string[]
-}
+type ClickupChecklist = Record<string, string[]>
 
-async function convertAttachmentsToComment(clickup: string): Promise<ImportComment[]> {
-  const res : ImportComment[] = []
+async function convertAttachmentsToComment (clickup: string): Promise<ImportComment[]> {
+  const res: ImportComment[] = []
   const attachments: ClickupAttachment[] = JSON.parse(clickup)
-    for (const attachment of attachments){
-      const blob = await download(attachment.url) // todo: handle error (broken link, or no vpn)
-      res.push({
-        // text: `</br> Attachment: <a href='${attachment.url}'>${attachment.title}</a>`,
-        text: `(${attachment.url})[${attachment.title}]`,
-        attachments: [{
+  for (const attachment of attachments) {
+    const blob = await download(attachment.url) // todo: handle error (broken link, or no vpn)
+    res.push({
+      // text: `</br> Attachment: <a href='${attachment.url}'>${attachment.title}</a>`,
+      text: `(${attachment.url})[${attachment.title}]`,
+      attachments: [
+        {
           title: attachment.title,
           blob
-        }]
-      })
-    }
-    return res
+        }
+      ]
+    })
+  }
+  return res
 }
 
+// const form = new FormData()
+// const file = new File([blob], attachment.title)
+// form.append('file', file)
+// form.append('type', file.type)
+// form.append('size', file.size.toString())
+// form.append('name', attachment.title)
+// const id = generateId()
+// form.append('id', id)
+// form.append('data', blob) // ?
 
-
-        // const form = new FormData()
-        // const file = new File([blob], attachment.title)
-        // form.append('file', file)
-        // form.append('type', file.type)
-        // form.append('size', file.size.toString())
-        // form.append('name', attachment.title)
-        // const id = generateId()
-        // form.append('id', id)
-        // form.append('data', blob) // ?
-      
 // async (): Promise<File | undefined> => {
 //   const blob = await ops.blobProvider?.({ file: v.urlDownload, id: `${v.id}` })
 //   if (blob !== undefined) {
@@ -251,12 +248,12 @@ async function convertAttachmentsToComment(clickup: string): Promise<ImportComme
 //   continue
 // }
 
-function convertChecklistsToMarkdown(clickup: string): string {
+function convertChecklistsToMarkdown (clickup: string): string {
   const checklists = JSON.parse(clickup)
   let huly: string = '\n'
   for (const [key, values] of Object.entries(checklists)) {
     huly += `**${key}**\n`
-    for (const value of (values as string[])) {
+    for (const value of values as string[]) {
       huly += `* [ ] ${value} \n` // todo: test and fix for checked items
     }
     huly += '\n'
@@ -264,10 +261,8 @@ function convertChecklistsToMarkdown(clickup: string): string {
   return huly
 }
 
-function fixMultilineString(content: string) {
-  return content
-    .split('\\n')
-    .join('\n')
+function fixMultilineString (content: string) {
+  return content.split('\\n').join('\n')
 }
 
 async function importPageDocument (
@@ -320,46 +315,44 @@ export interface ClickupIssue extends Issue {
   clickupId: string
 }
 
-export async function createClickUpProjectType (
-  client: TxOperations,
-  statuses: string[]
-): Promise<Ref<ProjectType>> {
-  return await createProjectType(client, {
-    name: 'ClickUp project',
-    descriptor: tracker.descriptors.ProjectType,
-    shortDescription: 'For issues imported from ClickUp',
-    description: '',
-    tasks: [],
-    roles: 0,
-    classic: true
-  }, [{
-    _id: CLICKUP_TASK_TYPE_ID,
-    descriptor: tracker.descriptors.Issue,
-    kind: 'both',
-    name: 'ClickUp issue',
-    ofClass: tracker.class.Issue,
-    statusCategories: [task.statusCategory.UnStarted],
-    statusClass: tracker.class.IssueStatus,
-    icon: tracker.icon.Issue,
-    color: 0,
-    allowedAsChildOf: [CLICKUP_TASK_TYPE_ID],
-    factory: statuses.map(status => {
-      return {
-        name: status,
-        ofAttribute: pluginState.attribute.IssueStatus,
-        category: task.statusCategory.UnStarted
+export async function createClickUpProjectType (client: TxOperations, statuses: string[]): Promise<Ref<ProjectType>> {
+  return await createProjectType(
+    client,
+    {
+      name: 'ClickUp project',
+      descriptor: tracker.descriptors.ProjectType,
+      shortDescription: 'For issues imported from ClickUp',
+      description: '',
+      tasks: [],
+      roles: 0,
+      classic: true
+    },
+    [
+      {
+        _id: CLICKUP_TASK_TYPE_ID,
+        descriptor: tracker.descriptors.Issue,
+        kind: 'both',
+        name: 'ClickUp issue',
+        ofClass: tracker.class.Issue,
+        statusCategories: [task.statusCategory.UnStarted],
+        statusClass: tracker.class.IssueStatus,
+        icon: tracker.icon.Issue,
+        color: 0,
+        allowedAsChildOf: [CLICKUP_TASK_TYPE_ID],
+        factory: statuses.map((status) => {
+          return {
+            name: status,
+            ofAttribute: pluginState.attribute.IssueStatus,
+            category: task.statusCategory.UnStarted
+          }
+        })
       }
-    })
-  }],
-  CLICKUP_PROJECT_TYPE_ID
+    ],
+    CLICKUP_PROJECT_TYPE_ID
   )
 }
 
-async function createProject (
-  client: TxOperations,
-  name: string,
-  typeId: Ref<ProjectType>
-): Promise<Ref<Project>> {
+async function createProject (client: TxOperations, name: string, typeId: Ref<ProjectType>): Promise<Ref<Project>> {
   const projectId = generateId<Project>()
   const projectData = {
     name,
@@ -375,19 +368,8 @@ async function createProject (
     defaultIssueStatus: '' as Ref<IssueStatus>,
     defaultTimeReportDay: TimeReportDayType.PreviousWorkDay
   }
-  await client.createDoc(
-    tracker.class.Project,
-    core.space.Space,
-    { ...projectData, type: typeId },
-    projectId
-  )
+  await client.createDoc(tracker.class.Project, core.space.Space, { ...projectData, type: typeId }, projectId)
   // Add space type's mixin with roles assignments
-  await client.createMixin(
-    projectId,
-    tracker.class.Project,
-    core.space.Space,
-    CLICKUP_MIXIN_ID,
-    {}
-  )
+  await client.createMixin(projectId, tracker.class.Project, core.space.Space, CLICKUP_MIXIN_ID, {})
   return projectId
 }

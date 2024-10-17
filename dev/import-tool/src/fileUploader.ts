@@ -15,6 +15,6 @@ export function getFileUploader (frontUrl: string, token: string): FileUploader 
   }
 }
 
-export async function download(url: string): Promise<Blob> {
-  return (await fetch(url)).blob()
+export async function download (url: string): Promise<Blob> {
+  return await (await fetch(url)).blob()
 }
