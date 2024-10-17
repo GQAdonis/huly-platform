@@ -26,7 +26,7 @@ import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
 import task, { createProjectType, makeRank, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
-import { importComment, type ImportComment, importIssue, type ImportIssue } from './importer/importer'
+import { importComment, type ImportComment, importIssue, type ImportIssue } from './importer/utils'
 import attachment from '@hcengineering/model-attachment'
 import { blob } from 'stream/consumers'
 
