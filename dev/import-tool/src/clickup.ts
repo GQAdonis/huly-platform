@@ -157,7 +157,7 @@ async function processClickupTasks (
 async function convertToImportIssue (client: TxOperations, clickup: ClickupTask): Promise<ImportIssue> {
   const query: DocumentQuery<Status> = {
     name: clickup.Status,
-    ofAttribute: pluginState.attribute.IssueStatus,
+    ofAttribute: tracker.attribute.IssueStatus,
     category: task.statusCategory.UnStarted
   }
 

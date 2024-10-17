@@ -1,11 +1,12 @@
-import core, { collaborativeDocParse, Data, Doc, generateId, makeCollaborativeDoc, Ref, Timestamp, TxOperations } from "@hcengineering/core"
+import core, { collaborativeDocParse, Data, Doc, generateId, makeCollaborativeDoc, Mixin, Ref, Timestamp, TxOperations } from "@hcengineering/core"
 import { FileUploader } from "../fileUploader"
 import task, { createProjectType, makeRank, Project, TaskTypeWithFactory, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
 import document, { type Document, type Teamspace, getFirstRank } from '@hcengineering/document'
-import tracker from '@hcengineering/tracker'
+import tracker, { IssueStatus, TimeReportDayType } from '@hcengineering/tracker'
 import { title } from "process"
 import { jsonToYDocNoSchema, parseMessageMarkdown } from "@hcengineering/text"
 import { yDocToBuffer } from "@hcengineering/collaboration"
+import { Person } from "@hcengineering/contact"
 
 export interface ImportWorkspace {
     persons?: ImportPerson[]
@@ -61,14 +62,16 @@ export interface ImportDocument extends ImportDoc {
 
 export interface ImportProject extends ImportSpace<ImportIssue> {
     class: 'tracker.class.Project'
+    name: string,
     identifier: string
     private: boolean
     autoJoin: boolean
+    projectType: ImportProjectType
     defaultAssignee?: ImportPerson
     defaultIssueStatus?: ImportStatus
     owners?: ImportPerson[]
     members?: ImportPerson[]
-    projectType?: ImportProjectType
+    description?: string,
 }
 
 export interface ImportIssue extends ImportDoc {
@@ -94,22 +97,33 @@ export interface ImportAttachment {
 }
 
 export class WorkspaceImporter {
+    private personsByName = new Map<string, Ref<Person>> 
+    private issueStatusByName = new Map<string, Ref<IssueStatus>> 
+    private projectTypeByName = new Map<string, Ref<ProjectType>> 
+
     constructor (
         private readonly client: TxOperations,
-        private readonly fileUploader: FileUploader
+        private readonly fileUploader: FileUploader,
+        private readonly workspaceData: ImportWorkspace
     ) {}
 
-    public async updateWorkspace(workspaceData: ImportWorkspace) {
-        if (workspaceData.projectTypes !== undefined) {
-            for (const projectType: ImportProject of workspaceData.projectTypes) {
-                console.log("Import ProjectType: ", projectType.name)
-                await this.importProjectType(projectType) // todo: create or update
-                console.log("Import success: ", projectType.name)
+    public async performImport() {
+        if (this.workspaceData.persons !== undefined) {
+            for (const person of this.workspaceData.persons) {
+                // todo create people
+                this.personsByName.set(person.name, generateId())
             }
         }
 
-        if (workspaceData.spaces !== undefined) {
-            for (const space of workspaceData.spaces) {
+        if (this.workspaceData.projectTypes !== undefined) {
+            for (const projectType of this.workspaceData.projectTypes) {
+                const projectTypeId = await this.importProjectType(projectType)
+                this.projectTypeByName.set(projectType.name, projectTypeId)
+            }
+        }
+
+        if (this.workspaceData.spaces !== undefined) {
+            for (const space of this.workspaceData.spaces) {
                 if (space.class === 'document.class.TeamSpace') {
                     await this.importTeamspace(space as ImportTeamspace)
                 } else if (space.class === 'tracker.class.Project') {
@@ -122,7 +136,7 @@ export class WorkspaceImporter {
     async importProjectType(projectType: ImportProjectType): Promise<Ref<ProjectType>> {
         const taskTypes: TaskTypeWithFactory[] = []
         if (projectType.taskTypes !== undefined) {
-            for (const taskType: ImportTaskType of projectType.taskTypes) {
+            for (const taskType of projectType.taskTypes) {
                 const taskTypeId = generateId<TaskType>()
                 const statuses = taskType.statuses.map((status) => {
                     return {
@@ -235,7 +249,37 @@ export class WorkspaceImporter {
     }
 
     async importProject(project: ImportProject): Promise<Ref<Project>> {
+        const projectId = await this.createProject(project)
         
+        return projectId
     }
+
+    async createProject (project: ImportProject): Promise<Ref<Project>> {
+        const projectId = generateId<Project>()
+        const projectType = this.projectTypeByName.get(project.projectType.name)
+        const defaultIssueStatus = project.defaultIssueStatus !== undefined
+            ? this.issueStatusByName.get(project.defaultIssueStatus.name)
+            : this.issueStatusByName.values().next()
+        const projectData = {
+          name: project.name,
+          description: project.description ?? '',
+          private: project.private,
+          members: [], // todo
+          owners: [], // todo
+          archived: false,
+          autoJoin: project.autoJoin,
+          identifier: project.identifier,
+          sequence: 0,
+          defaultIssueStatus, // todo: test with no status
+          defaultTimeReportDay: TimeReportDayType.PreviousWorkDay,
+          type: projectType ?? generateId() //tracker.ids.ClassicProjectType // todo: fixme! handle project type is not set or created before the import
+        }
+        await this.client.createDoc(tracker.class.Project, core.space.Space, projectData, projectId)
+        // Add space type's mixin with roles assignments
+        // const CLICKUP_MIXIN_ID = `${CLICKUP_TASK_TYPE_ID}:type:mixin` as Ref<Class<Task>>
+        const mixinId = `${this.projectTypeByName.get(project.name)}:type:mixin` as Ref<Mixin<Project>>
+        await this.client.createMixin(projectId, tracker.class.Project, core.space.Space, mixinId, {})
+        return projectId
+      }
 
 }
