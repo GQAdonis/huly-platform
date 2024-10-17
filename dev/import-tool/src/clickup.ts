@@ -12,8 +12,7 @@ import core, {
 } from '@hcengineering/core'
 import { download, type FileUploader } from './fileUploader'
 import document, { getFirstRank, type Document, type Teamspace } from '@hcengineering/document'
-import tracker from '@hcengineering/tracker'
-import pluginState, {
+import tracker, {
   type Issue,
   IssuePriority,
   type IssueStatus,
@@ -342,7 +341,7 @@ export async function createClickUpProjectType (client: TxOperations, statuses: 
         factory: statuses.map((status) => {
           return {
             name: status,
-            ofAttribute: pluginState.attribute.IssueStatus,
+            ofAttribute: tracker.attribute.IssueStatus,
             category: task.statusCategory.UnStarted
           }
         })
