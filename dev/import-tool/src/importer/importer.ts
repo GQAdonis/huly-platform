@@ -1,3 +1,4 @@
+import attachment, { attachmentId } from '@hcengineering/attachment'
 import {
   Account,
   AttachedData,
@@ -9,16 +10,21 @@ import {
   SortingOrder,
   type Status,
   Timestamp,
-  type TxOperations
+  type TxOperations,
+  type Blob as PlatformBlob
 } from '@hcengineering/core'
 import { type Person } from '@hcengineering/contact'
 import tracker, { type Issue, type IssuePriority, type Project } from '@hcengineering/tracker'
 import type { FileUploader } from '../fileUploader'
+import document from '@hcengineering/document'
 import core from '@hcengineering/model-core'
 import task, { makeRank, type TaskType } from '@hcengineering/task'
 import { jsonToYDocNoSchema, parseMessageMarkdown } from '@hcengineering/text'
 import { yDocToBuffer } from '@hcengineering/collaboration'
 import chunter, { ChatMessage } from '@hcengineering/chunter'
+
+import { readdir, stat, readFile } from 'fs/promises'
+import { writeFileSync } from 'fs'
 
 export interface ImportTaskType {
   name: string
@@ -39,6 +45,12 @@ export interface ImportComment {
   text: string
   author?: Ref<Account> // todo: person vs account
   date?: Timestamp
+  attachments: ImportAttachment[]
+}
+
+export interface ImportAttachment {
+  title: string
+  blob: Blob
 }
 
 export interface ImportIssue {
@@ -115,9 +127,9 @@ export async function importIssue (
     id
   )
 
-  data.comments.forEach((comment: ImportComment) => {
-    importComment(client, id, comment, space)
-  })
+  for (const comment of data.comments) {
+    await importComment(client, uploadFile, id, comment, space)
+  }
 }
 
 async function importIssueDescription (
@@ -148,24 +160,62 @@ async function importIssueDescription (
 
 export async function importComment (
   client: TxOperations,
+  uploadFile: FileUploader,
   issueId: Ref<Issue>,
   data: ImportComment,
   space: Ref<Project>
 ): Promise<void> {
+  const commentId = generateId<ChatMessage>()
   const value: AttachedData<ChatMessage> = {
     message: data.text,
-    attachments: 0
+    attachments: data.attachments?.length
   }
-    await client.addCollection(
-      chunter.class.ChatMessage,
-      space,
-      issueId,
-      tracker.class.Issue,
-      'comments',
-      value,
-      generateId(),
-      // new Date(data.created_at).getTime(),
-      data.date,
-      data.author
-    )
+  await client.addCollection(
+    chunter.class.ChatMessage,
+    space,
+    issueId,
+    tracker.class.Issue,
+    'comments',
+    value,
+    commentId,
+    // new Date(data.created_at).getTime(),
+    data.date,
+    data.author
+  )
+
+  for (const attach of data.attachments) {
+    const form = new FormData()
+    const file = new File([attach.blob], attach.title)
+    form.append('file', file)
+    form.append('type', file.type)
+    form.append('size', file.size.toString())
+    form.append('name', attach.title)
+    const attachmentId = generateId()
+    form.append('id', attachmentId)
+    form.append('data', attach.blob) // ?
+
+    await uploadFile(attachmentId, form)
+    
+    const attachValue = {
+        _id: attachmentId,
+        _class: attachment.class.Attachment,
+        attachedTo: commentId,
+        attachedToClass: chunter.class.ChatMessage,
+        collection: 'attachments',
+      file: '' as Ref<PlatformBlob>,
+      lastModified: Date.now(),
+      name: file.name,
+      size: file.size,
+      space: space,
+      type: 'file'
+    }
+
+    const data = new FormData()
+    data.append('file', new File([attach.blob], attach.title))
+    
+    // await client.createDoc(document.class.Document, space, attachValue, attachmentId)
+  }
 }
+
+// const file = new File([attach.blob], attach.title)
+// writeFileSync(`kitten.jpg`, new Uint8Array(await file.arrayBuffer()))

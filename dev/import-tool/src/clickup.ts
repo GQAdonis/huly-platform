@@ -10,7 +10,7 @@ import core, {
   Timestamp,
   type TxOperations
 } from '@hcengineering/core'
-import { type FileUploader } from './fileUploader'
+import { download, type FileUploader } from './fileUploader'
 import document, { getFirstRank, type Document, type Teamspace } from '@hcengineering/document'
 import tracker from '@hcengineering/tracker'
 import pluginState, {
@@ -26,7 +26,9 @@ import { readdir, readFile } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
 import task, { createProjectType, makeRank, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
-import { ImportComment, importIssue, type ImportIssue } from './importer/importer'
+import { importComment, ImportComment, importIssue, type ImportIssue } from './importer/importer'
+import attachment from '@hcengineering/model-attachment'
+import { blob } from 'stream/consumers'
 
 interface ClickupTask {
   'Task ID': string
@@ -172,7 +174,7 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
   const remainingTime = estimation - clickup['Time Spent']
 
   const comments = convertToImportComments(clickup.Comments)
-  comments.push(convertAttachmentsToComment(clickup.Attachments))
+  const attachments = await convertAttachmentsToComment(clickup.Attachments)
   
   return {
     title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
@@ -182,7 +184,7 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
     priority: IssuePriority.NoPriority, // todo
     estimation,
     remainingTime,
-    comments
+    comments: comments.concat(attachments)
   }
 }
 
@@ -196,15 +198,58 @@ function convertToImportComments(clickup: string): ImportComment[] {
     })
 }
 
-function convertAttachmentsToComment(clickup: string): ImportComment {
-  const urls: string[] = JSON.parse(clickup)
-    .map((attachment: ClickupAttachment) => {
-       return `[${attachment.title}](${attachment.url})`
-    })
-  return {
-    text: urls.join('\n')
-  }
+type ClickupChecklist = {
+  [x: string]: string[]
 }
+
+async function convertAttachmentsToComment(clickup: string): Promise<ImportComment[]> {
+  const res : ImportComment[] = []
+  const attachments: ClickupAttachment[] = JSON.parse(clickup)
+    for (const attachment of attachments){
+      const blob = await download(attachment.url) // todo: handle error (broken link, or no vpn)
+      res.push({
+        // text: `</br> Attachment: <a href='${attachment.url}'>${attachment.title}</a>`,
+        text: `(${attachment.url})[${attachment.title}]`,
+        attachments: [{
+          title: attachment.title,
+          blob
+        }]
+      })
+    }
+    return res
+}
+
+
+
+        // const form = new FormData()
+        // const file = new File([blob], attachment.title)
+        // form.append('file', file)
+        // form.append('type', file.type)
+        // form.append('size', file.size.toString())
+        // form.append('name', attachment.title)
+        // const id = generateId()
+        // form.append('id', id)
+        // form.append('data', blob) // ?
+      
+// async (): Promise<File | undefined> => {
+//   const blob = await ops.blobProvider?.({ file: v.urlDownload, id: `${v.id}` })
+//   if (blob !== undefined) {
+//     return new File([blob], v.name)
+//   }
+// },
+// (file: File, attach: Attachment) => {
+//   attach.attachedTo = c._id  // куда положить??
+//   attach.type = file.type
+//   attach.size = file.size
+//   attach.name = file.name
+// }
+
+// error handlong: ?
+// const edData = await op()
+// if (edData === undefined) {
+//   console.error('Failed to retrieve document data', ed.name)
+//   continue
+// }
 
 function convertChecklistsToMarkdown(clickup: string): string {
   const checklists = JSON.parse(clickup)
