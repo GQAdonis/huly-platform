@@ -112,7 +112,7 @@ async function createDefaultProject (tx: TxOperations): Promise<void> {
             defaultIssueStatus: state._id,
             defaultTimeReportDay: TimeReportDayType.PreviousWorkDay,
             defaultAssignee: undefined,
-            type: tracker.ids.ClassingProjectType
+            type: tracker.ids.ClassicProjectType
           },
           tracker.project.DefaultProject
         )
@@ -168,7 +168,7 @@ async function migrateIdentifiers (client: MigrationClient): Promise<void> {
 }
 
 async function migrateDefaultStatuses (client: MigrationClient, logger: ModelLogger): Promise<void> {
-  const defaultTypeId = tracker.ids.ClassingProjectType
+  const defaultTypeId = tracker.ids.ClassicProjectType
   const typeDescriptor = tracker.descriptors.ProjectType
   const baseClass = tracker.class.Project
   const defaultTaskTypeId = tracker.taskTypes.Issue
@@ -285,7 +285,7 @@ async function migrateStatusesToModel (client: MigrationClient): Promise<void> {
 }
 
 async function migrateDefaultTypeMixins (client: MigrationClient): Promise<void> {
-  const oldSpaceTypeMixin = `${tracker.ids.ClassingProjectType}:type:mixin`
+  const oldSpaceTypeMixin = `${tracker.ids.ClassicProjectType}:type:mixin`
   const newSpaceTypeMixin = tracker.mixin.ClassicProjectTypeData
   const oldTaskTypeMixin = `${tracker.taskTypes.Issue}:type:mixin`
   const newTaskTypeMixin = tracker.mixin.IssueTypeData
