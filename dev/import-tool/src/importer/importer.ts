@@ -1,12 +1,15 @@
-import core, { collaborativeDocParse, Data, Doc, generateId, makeCollaborativeDoc, Mixin, Ref, Timestamp, TxOperations } from "@hcengineering/core"
+import attachment from '@hcengineering/attachment'
+import core, { AttachedData, CollaborativeDoc, collaborativeDocParse, Data, Doc, generateId, makeCollaborativeDoc, Mixin, ObjQueryType, Ref, SortingOrder, Timestamp,
+     TxOperations,
+     type Blob as PlatformBlob } from "@hcengineering/core"
 import { FileUploader } from "../fileUploader"
-import task, { createProjectType, makeRank, Project, TaskTypeWithFactory, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
+import task, { createProjectType, makeRank, TaskTypeWithFactory, type ProjectType, type TaskType } from '@hcengineering/task'
 import document, { type Document, type Teamspace, getFirstRank } from '@hcengineering/document'
-import tracker, { IssueStatus, TimeReportDayType } from '@hcengineering/tracker'
-import { title } from "process"
 import { jsonToYDocNoSchema, parseMessageMarkdown } from "@hcengineering/text"
 import { yDocToBuffer } from "@hcengineering/collaboration"
 import { Person } from "@hcengineering/contact"
+import tracker, { Issue, IssuePriority, IssueStatus, Project, TimeReportDayType } from "@hcengineering/tracker"
+import chunter, { type ChatMessage } from '@hcengineering/chunter'
 
 export interface ImportWorkspace {
     persons?: ImportPerson[]
@@ -86,7 +89,7 @@ export interface ImportIssue extends ImportDoc {
   
 export interface ImportComment {
     text: string
-    author?: ImportPerson // todo: person vs account
+    author: ImportPerson // todo: person vs account
     date?: Timestamp
     attachments?: ImportAttachment[]
 }
@@ -250,8 +253,18 @@ export class WorkspaceImporter {
 
     async importProject(project: ImportProject): Promise<Ref<Project>> {
         const projectId = await this.createProject(project)
-        
+        for (const issue of project.docs) {
+            await this.createIssueWithSubissues(issue, tracker.ids.NoParent, projectId)
+        }
         return projectId
+    }
+
+    async createIssueWithSubissues(issue: ImportIssue, parentId: Ref<Issue>, projectId: Ref<Project> ): Promise<Ref<Issue>> {
+        const issueId = await this.createIssue(issue, parentId, projectId)
+        for (const child of issue.subdocs) {
+            await this.createIssueWithSubissues(child as ImportIssue, issueId, projectId)
+        }
+        return issueId
     }
 
     async createProject (project: ImportProject): Promise<Ref<Project>> {
@@ -259,7 +272,7 @@ export class WorkspaceImporter {
         const projectType = this.projectTypeByName.get(project.projectType.name)
         const defaultIssueStatus = project.defaultIssueStatus !== undefined
             ? this.issueStatusByName.get(project.defaultIssueStatus.name)
-            : this.issueStatusByName.values().next()
+            : tracker.status.Backlog
         const projectData = {
           name: project.name,
           description: project.description ?? '',
@@ -270,9 +283,9 @@ export class WorkspaceImporter {
           autoJoin: project.autoJoin,
           identifier: project.identifier,
           sequence: 0,
-          defaultIssueStatus, // todo: test with no status
+          defaultIssueStatus: defaultIssueStatus ?? tracker.status.Backlog, // todo: test with no status
           defaultTimeReportDay: TimeReportDayType.PreviousWorkDay,
-          type: projectType ?? generateId() //tracker.ids.ClassicProjectType // todo: fixme! handle project type is not set or created before the import
+          type: projectType ?? generateId() // tracker.ids.ClassicProjectType // todo: fixme! handle project type is not set or created before the import
         }
         await this.client.createDoc(tracker.class.Project, core.space.Space, projectData, projectId)
         // Add space type's mixin with roles assignments
@@ -281,5 +294,160 @@ export class WorkspaceImporter {
         await this.client.createMixin(projectId, tracker.class.Project, core.space.Space, mixinId, {})
         return projectId
       }
+
+
+    async createIssue(issue: ImportIssue, parentId: Ref<Issue>, projectId: Ref<Project> ): Promise<Ref<Issue>> {
+        const issueId = generateId<Issue>()
+        const lastOne = await this.client.findOne<Issue>(
+            tracker.class.Issue,
+            { space: projectId },
+            { sort: { rank: SortingOrder.Descending } }
+        )
+        const incResult = await this.client.updateDoc(
+            tracker.class.Project,
+            core.space.Space,
+            projectId,
+            {
+            $inc: { sequence: 1 }
+            },
+            true
+        )
+
+        const proj = await this.client.findOne(tracker.class.Project, { _id: projectId })
+        const number = (incResult as any).object.sequence
+        const identifier = `${proj?.identifier}-${number}`
+
+        const taskKind = proj?.type !== undefined ? { parent: proj.type } : {}
+        const kind = (await this.client.findOne(task.class.TaskType, taskKind)) as TaskType
+
+        const collabId = await this.importIssueDescription(issueId, await issue.descrProvider())
+
+        const status = this.issueStatusByName.get(issue.status.name)
+        const taskToCreate = {
+            title: issue.title,
+            description: collabId,
+            assignee: null, // todo: Ref<Person> 
+            component: null,
+            number,
+            status: status!,
+            priority: IssuePriority.NoPriority, // todo
+            rank: makeRank(lastOne?.rank, undefined),
+            comments: issue.comments?.length ?? 0,
+            subIssues: 0, // todo
+            dueDate: null,
+            parents: [], // todo
+            reportedTime: 0,
+            remainingTime: issue.remainingTime ?? 0,
+            estimation: issue.estimation ?? 0,
+            reports: 0,
+            childInfo: [],
+            identifier,
+            kind: kind._id
+        }
+        await this.client.addCollection(
+            tracker.class.Issue,
+            projectId,
+            tracker.ids.NoParent,
+            tracker.class.Issue,
+            'subIssues',
+            taskToCreate,
+            issueId
+        )
+
+        if (issue.comments !== undefined) {
+            for (const comment of issue.comments) {
+                await this.importComment(issueId, comment, projectId)
+            }
+        }
+        return issueId
+    }
+
+    async importIssueDescription (
+        id: Ref<Issue>,
+        data: string
+    ): Promise<CollaborativeDoc> {
+        const json = parseMessageMarkdown(data ?? '', 'image://')
+        const collabId = makeCollaborativeDoc(id, 'description')
+
+        const yDoc = jsonToYDocNoSchema(json, 'description')
+        const { documentId } = collaborativeDocParse(collabId)
+        const buffer = yDocToBuffer(yDoc)
+
+        const form = new FormData()
+        const file = new File([new Blob([buffer])], collabId)
+        form.append('file', file, documentId)
+        form.append('type', 'application/ydoc')
+        form.append('size', buffer.length.toString())
+        form.append('name', collabId)
+        form.append('id', id)
+        form.append('data', new Blob([buffer])) // ?
+
+        await this.fileUploader(id, form)
+
+        return collabId
+    }
+
+    async importComment (
+        issueId: Ref<Issue>,
+        comment: ImportComment,
+        projectId: Ref<Project>
+    ): Promise<void> {
+        const commentId = generateId<ChatMessage>()
+        const value: AttachedData<ChatMessage> = {
+            message: comment.text,
+            attachments: comment.attachments?.length
+        }
+        await this.client.addCollection(
+            chunter.class.ChatMessage,
+            projectId,
+            issueId,
+            tracker.class.Issue,
+            'comments',
+            value,
+            commentId,
+            // new Date(data.created_at).getTime(),
+            comment.date
+            // this.personsByName.comment.author // todo: as Ref<Account>
+        )
+
+        if (comment.attachments !== undefined) {
+            for (const attach of comment.attachments) {
+                const blob = await attach.blobProvider()
+                const file = new File([blob], attach.title)
+                const form = new FormData()
+                form.append('file', file)
+                form.append('type', file.type)
+                form.append('size', file.size.toString())
+                form.append('name', attach.title)
+                const attachmentId = generateId()
+                form.append('id', attachmentId)
+                form.append('data', blob) // ?
+
+                await this.fileUploader(attachmentId, form)
+
+                const attachValue = {
+                _id: attachmentId,
+                _class: attachment.class.Attachment,
+                attachedTo: commentId,
+                attachedToClass: chunter.class.ChatMessage,
+                collection: 'attachments',
+                file: '' as Ref<PlatformBlob>,
+                lastModified: Date.now(),
+                name: file.name,
+                size: file.size,
+                space: projectId,
+                type: 'file'
+                }
+
+                const data = new FormData()
+                data.append('file', new File([blob], attach.title))
+
+                // await client.createDoc(document.class.Document, space, attachValue, attachmentId)
+            }
+        }
+    }
+
+    // const file = new File([attach.blob], attach.title)
+    // writeFileSync(`kitten.jpg`, new Uint8Array(await file.arrayBuffer()))
 
 }
