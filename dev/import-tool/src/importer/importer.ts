@@ -84,7 +84,6 @@ export interface ImportDocument extends ImportDoc {
 
 export interface ImportProject extends ImportSpace<ImportIssue> {
   class: 'tracker.class.Project'
-  name: string
   identifier: string
   private: boolean
   autoJoin: boolean

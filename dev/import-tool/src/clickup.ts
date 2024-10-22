@@ -2,32 +2,28 @@ import core, {
   type Class,
   collaborativeDocParse,
   type Data,
-  type DocumentQuery,
   generateId,
   makeCollaborativeDoc,
   type Ref,
-  type Status,
   type Timestamp,
   type TxOperations
 } from '@hcengineering/core'
-import { download, type FileUploader } from './fileUploader'
+import { type FileUploader } from './fileUploader'
 import document, { getFirstRank, type Document, type Teamspace } from '@hcengineering/document'
 import tracker, {
   type Issue,
-  IssuePriority,
   type IssueStatus,
   type Project,
   TimeReportDayType
 } from '@hcengineering/tracker'
 import { jsonToYDocNoSchema, parseMessageMarkdown } from '@hcengineering/text'
 import { yDocToBuffer } from '@hcengineering/collaboration'
-import { readdir, readFile } from 'fs/promises'
+import { readdir } from 'fs/promises'
 import { join, parse } from 'path'
 import csv from 'csvtojson'
 import task, { createProjectType, makeRank, type ProjectType, type Task, type TaskType } from '@hcengineering/task'
-import { importComment, type ImportComment, importIssue, type ImportIssue } from './importer/utils'
-import attachment from '@hcengineering/model-attachment'
-import { blob } from 'stream/consumers'
+import { importIssue, type ImportIssue as ImportIssueOld } from './importer/utils'
+import { ImportComment, ImportIssue, ImportProject, ImportProjectType, ImportSpace, ImportWorkspace, WorkspaceImporter } from './importer/importer'
 
 interface ClickupTask {
   'Task ID': string
@@ -56,6 +52,11 @@ interface ClickupAttachment {
   url: string
 }
 
+interface ImportIssueEx extends ImportIssue {
+  clickupParentId?: string
+  clickupProjectName?: string
+}
+
 const CLICKUP_PROJECT_TYPE_ID = generateId<ProjectType>()
 const CLICKUP_TASK_TYPE_ID = generateId<TaskType>()
 const CLICKUP_MIXIN_ID = `${CLICKUP_TASK_TYPE_ID}:type:mixin` as Ref<Class<Task>>
@@ -63,8 +64,7 @@ const CLICKUP_MIXIN_ID = `${CLICKUP_TASK_TYPE_ID}:type:mixin` as Ref<Class<Task>
 export async function importClickUp (
   client: TxOperations,
   uploadFile: FileUploader,
-  dir: string,
-  teamspace: Ref<Teamspace>
+  dir: string
 ): Promise<void> {
   const files = await readdir(dir, { recursive: true })
   console.log(files)
@@ -74,31 +74,19 @@ export async function importClickUp (
     const extension = parsedFileName.ext.toLowerCase()
     const fullPath = join(dir, file)
     if (extension === '.md') {
-      await processClickupDocument(fullPath, client, uploadFile, parsedFileName.name, teamspace)
+      console.log ("MD Document")
     } else if (extension === '.csv') {
+      console.log ("CSV Tasks")
       await processClickupTasks(fullPath, client, uploadFile)
     }
   }
 }
 
-async function processClickupDocument (
-  fullPath: string,
-  client: TxOperations,
-  uploadFile: (id: string, data: any) => Promise<any>,
-  docName: string,
-  teamspace: string & {
-    __ref: Teamspace
-  }
-): Promise<void> {
-  const data = await readFile(fullPath)
-  await importPageDocument(client, uploadFile, docName, data, teamspace)
-}
-
-async function traverseCsv (file: string, callback: (json: ClickupTask) => Promise<void> | void): Promise<void> {
+async function processTasksCsv (file: string, process: (json: ClickupTask) => Promise<void> | void): Promise<void> {
   const jsonArray = await csv().fromFile(file)
   for (const json of jsonArray) {
     const clickupTask = json as ClickupTask
-    await callback(clickupTask)
+    await process(clickupTask)
   }
 }
 
@@ -107,63 +95,64 @@ async function processClickupTasks (
   client: TxOperations,
   uploadFile: (id: string, data: any) => Promise<any>
 ): Promise<void> {
-  const clickupHulyIdMap = new Map<string, Ref<Issue>>()
+  const importIssuesByClickupId = new Map<string, ImportIssueEx>()
   const statuses = new Set<string>()
   const projects = new Set<string>()
-  const persons = new Set<string>()
-  const emails = new Set<string>()
 
-  await traverseCsv(file, (clickupTask) => {
-    clickupHulyIdMap.set(clickupTask['Task ID'], generateId())
+  await processTasksCsv(file, async (clickupTask) => {
+    const importIssue = await convertToImportIssue(clickupTask) as ImportIssueEx
+    importIssue.clickupParentId = clickupTask['Parent ID']
+    importIssuesByClickupId.set(clickupTask['Task ID'], importIssue)
+    
     statuses.add(clickupTask.Status)
     projects.add(clickupTask['Space Name'])
-
-    clickupTask.Assignees.substring(1, clickupTask.Assignees.length - 1)
-      .split(',')
-      .filter((name) => name.length > 0)
-      .forEach((name) => persons.add(name))
-
-    JSON.parse(clickupTask.Comments).forEach((comment: ClickupComment) => {
-      emails.add(comment.by)
-    })
   })
 
-  // console.log(clickupHulyIdMap)
-  // console.log(statuses)
-  // console.log(projects)
-  // console.log(persons)
-  // console.log(emails)
+  const importProjectType = createClickupProjectType(Array.from(statuses))
 
-  const projectType = await createClickUpProjectType(client, Array.from(statuses))
-
-  const projectIdMap = new Map<string, Ref<Project>>()
-  for (const project of projects) {
-    const hulyProjectId = await createProject(client, project, projectType)
-    projectIdMap.set(project, hulyProjectId)
+  const importProjectsByName = new Map<string, ImportProject>()
+  for (const projectName of projects) {
+    importProjectsByName.set(projectName, {
+      class: 'tracker.class.Project',
+      name: projectName,
+      identifier: projectName.toUpperCase(),
+      private: false,
+      autoJoin: false,
+      projectType: importProjectType,
+      docs: []
+    })
   }
 
-  await traverseCsv(file, async (clickupTask) => {
-    const hulyIssue = await convertToImportIssue(client, clickupTask)
-    const hulyId = clickupHulyIdMap.get(clickupTask['Task ID'])
-    const hulyProjectId = projectIdMap.get(clickupTask['Space Name'])
-    if (hulyId === undefined || hulyProjectId === undefined) {
-      throw new Error(`Issue not found: ${hulyId}, ${hulyProjectId}`)
+  for (const [clickupId, issue] of importIssuesByClickupId) {
+    if (issue.clickupParentId !== undefined) {
+      const parent = importIssuesByClickupId.get(issue.clickupParentId)
+      if (parent === undefined) {
+        throw new Error(`Parent not found: ${issue.clickupParentId} (for task: ${clickupId})`)
+      }
+      parent.subdocs.push(issue)
+    } else if (issue.clickupProjectName !== undefined) {
+      const project = importProjectsByName.get(issue.clickupProjectName)
+      if (project === undefined) {
+        throw new Error(`Project not found: ${issue.clickupProjectName} (for task: ${clickupId})`)
+      }
+      project.docs.push(issue)
+    } else {
+      throw new Error(`Task cannot be imported: ${clickupId} (No parent)` )
     }
-    await importIssue(client, uploadFile, hulyId, hulyIssue, hulyProjectId)
-    console.log('IMPORTED: ', hulyIssue.title)
-  })
+  }
+
+  const importClickupData = {
+    persons: [],
+    spaces: Array.from(importProjectsByName.values()),
+    projectTypes: [importProjectType]
+  }
+
+  new WorkspaceImporter(client, uploadFile, importClickupData).performImport()
 }
 
-async function convertToImportIssue (client: TxOperations, clickup: ClickupTask): Promise<ImportIssue> {
-  const query: DocumentQuery<Status> = {
-    name: clickup.Status,
-    ofAttribute: tracker.attribute.IssueStatus,
-    category: task.statusCategory.UnStarted
-  }
-
-  const status = await client.findOne(tracker.class.IssueStatus, query)
-  if (status === undefined) {
-    throw new Error('Issue status not found: ' + clickup.Status)
+async function convertToImportIssue (clickup: ClickupTask): Promise<ImportIssue> {
+  const status = {
+    name: clickup.Status
   }
 
   const content = fixMultilineString(clickup['Task Content'])
@@ -173,17 +162,18 @@ async function convertToImportIssue (client: TxOperations, clickup: ClickupTask)
   const remainingTime = estimation - clickup['Time Spent']
 
   const comments = convertToImportComments(clickup.Comments)
-  const attachments = await convertAttachmentsToComment(clickup.Attachments)
+  // const attachments = await convertAttachmentsToComment(clickup.Attachments)
 
+  const description = `${content}\n\n---\n${checklists}` // todo: test all the combinations
   return {
+    class: 'tracker.class.Issue',
     title: '[' + clickup['Task ID'] + '] ' + clickup['Task Name'],
-    description: `${content}\n\n---\n${checklists}`, // todo: test all the combinations
-    assignee: null, // todo
-    status: status._id,
-    priority: IssuePriority.NoPriority, // todo
+    descrProvider: () => { return Promise.resolve(description) },
+    status,
     estimation,
     remainingTime,
-    comments: comments.concat(attachments)
+    comments,
+    subdocs: []
   }
 }
 
@@ -195,57 +185,6 @@ function convertToImportComments (clickup: string): ImportComment[] {
     }
   })
 }
-
-type ClickupChecklist = Record<string, string[]>
-
-async function convertAttachmentsToComment (clickup: string): Promise<ImportComment[]> {
-  const res: ImportComment[] = []
-  const attachments: ClickupAttachment[] = JSON.parse(clickup)
-  for (const attachment of attachments) {
-    const blob = await download(attachment.url) // todo: handle error (broken link, or no vpn)
-    res.push({
-      // text: `</br> Attachment: <a href='${attachment.url}'>${attachment.title}</a>`,
-      text: `(${attachment.url})[${attachment.title}]`,
-      attachments: [
-        {
-          title: attachment.title,
-          blob
-        }
-      ]
-    })
-  }
-  return res
-}
-
-// const form = new FormData()
-// const file = new File([blob], attachment.title)
-// form.append('file', file)
-// form.append('type', file.type)
-// form.append('size', file.size.toString())
-// form.append('name', attachment.title)
-// const id = generateId()
-// form.append('id', id)
-// form.append('data', blob) // ?
-
-// async (): Promise<File | undefined> => {
-//   const blob = await ops.blobProvider?.({ file: v.urlDownload, id: `${v.id}` })
-//   if (blob !== undefined) {
-//     return new File([blob], v.name)
-//   }
-// },
-// (file: File, attach: Attachment) => {
-//   attach.attachedTo = c._id  // куда положить??
-//   attach.type = file.type
-//   attach.size = file.size
-//   attach.name = file.name
-// }
-
-// error handlong: ?
-// const edData = await op()
-// if (edData === undefined) {
-//   console.error('Failed to retrieve document data', ed.name)
-//   continue
-// }
 
 function convertChecklistsToMarkdown (clickup: string): string {
   const checklists = JSON.parse(clickup)
@@ -314,43 +253,6 @@ export interface ClickupIssue extends Issue {
   clickupId: string
 }
 
-export async function createClickUpProjectType (client: TxOperations, statuses: string[]): Promise<Ref<ProjectType>> {
-  return await createProjectType(
-    client,
-    {
-      name: 'ClickUp project',
-      descriptor: tracker.descriptors.ProjectType,
-      shortDescription: 'For issues imported from ClickUp',
-      description: '',
-      tasks: [],
-      roles: 0,
-      classic: true
-    },
-    [
-      {
-        _id: CLICKUP_TASK_TYPE_ID,
-        descriptor: tracker.descriptors.Issue,
-        kind: 'both',
-        name: 'ClickUp issue',
-        ofClass: tracker.class.Issue,
-        statusCategories: [task.statusCategory.UnStarted],
-        statusClass: tracker.class.IssueStatus,
-        icon: tracker.icon.Issue,
-        color: 0,
-        allowedAsChildOf: [CLICKUP_TASK_TYPE_ID],
-        factory: statuses.map((status) => {
-          return {
-            name: status,
-            ofAttribute: tracker.attribute.IssueStatus,
-            category: task.statusCategory.UnStarted
-          }
-        })
-      }
-    ],
-    CLICKUP_PROJECT_TYPE_ID
-  )
-}
-
 async function createProject (client: TxOperations, name: string, typeId: Ref<ProjectType>): Promise<Ref<Project>> {
   const projectId = generateId<Project>()
   const projectData = {
@@ -371,4 +273,40 @@ async function createProject (client: TxOperations, name: string, typeId: Ref<Pr
   // Add space type's mixin with roles assignments
   await client.createMixin(projectId, tracker.class.Project, core.space.Space, CLICKUP_MIXIN_ID, {})
   return projectId
+}
+
+function createClickupProjectType(taskStatuses: string[]): ImportProjectType {
+  const statuses = taskStatuses.map((name) => {
+    return {
+      name
+    }
+  })
+ return {
+  name: 'ClickUp project!!!',
+  description: 'For issues imported from ClickUp!!!',
+  taskTypes: [{
+    name: 'ClickUp issue',
+    statuses
+  }]
+ }
+}
+
+function createClickupImportWs(taskStatuses: string[]): ImportWorkspace {
+  const statuses = taskStatuses.map((name) => {
+    return {
+      name
+    }
+  })
+ return {
+  persons: [],
+  spaces: [],
+  projectTypes: [{
+    name: 'ClickUp project!!!',
+    description: 'For issues imported from ClickUp!!!',
+    taskTypes: [{
+      name: 'ClickUp issue',
+      statuses
+    }]
+  }]
+ }
 }
